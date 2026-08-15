@@ -1,0 +1,10 @@
+# Raw captures and processing data (hundreds of GB, not source)
+/Capture/
+/Sun/
+/umbra/
+/out/
+/swap/
+
+# Python bytecode
+__pycache__/
+*.pyc
