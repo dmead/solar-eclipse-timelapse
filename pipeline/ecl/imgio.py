@@ -22,8 +22,8 @@ import os
 
 import numpy as np
 
-from lunation.io.images import read_image, write_png, write_tiff32
-from lunation.io.xisf_io import read_xisf, write_xisf
+from .vendor.io.images import read_image, write_png, write_tiff32
+from .vendor.io.xisf_io import read_xisf, write_xisf
 
 __all__ = ["read", "write", "read_xisf", "write_xisf", "read_image",
            "write_png", "write_tiff32", "channels", "stack_channels",

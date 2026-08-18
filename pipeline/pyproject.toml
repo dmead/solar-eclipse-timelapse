@@ -4,22 +4,20 @@ version = "0.1.0"
 description = "2024-04-08 total solar eclipse processing pipeline (PixInsight-free)"
 requires-python = ">=3.11"   # tomllib
 
-# The numeric spine comes from lunation: SER memmap reads, FFT phase
-# correlation, sub-pixel warp, kappa-sigma rejection, the drizzle stacker,
-# XISF I/O and the Kasa disc fit. Everything solar-specific lives here.
-# numpy/scipy/opencv/pillow/astropy all arrive transitively; they are named
-# again only where this repo imports them directly.
-# `lunation` is deliberately NOT listed here. It is a sibling repository, not a
-# published package, so naming it would make `pip install -e .` fail on any
-# machine that does not already have it at the path below. Install it explicitly
-# (see RUNNING.md); `python -m ecl.run` checks for it up front and says so
-# clearly rather than failing inside a pass an hour later.
+# Everything below is on PyPI. The numeric spine - FFT registration, sub-pixel
+# warp, kappa-sigma combination, the drizzle stacker, SER memmap reads, XISF I/O
+# - is VENDORED in ecl/vendor/ rather than depended on, so a clone of this
+# repository installs and runs with nothing but these. See ecl/vendor/__init__.py
+# for provenance and how to re-sync.
 dependencies = [
     "numpy>=2.0",
-    "pillow>=12.3.0",
-    "psutil>=5.9",
-    "opencv-python-headless>=4.10",
     "scipy>=1.11",
+    "opencv-python-headless>=4.10",
+    "scikit-image>=0.24",     # upsampled-DFT phase correlation
+    "pillow>=12.3.0",
+    "tifffile>=2024.1",       # 16-bit TIFF output
+    "xisf>=0.9",              # PixInsight XISF, pure Python
+    "psutil>=5.9",            # memory/core survey
 ]
 
 [project.optional-dependencies]
@@ -29,22 +27,12 @@ fits = ["astropy>=6.1"]    # FITS input and export
 [dependency-groups]
 dev = ["pytest>=8.3"]
 
-# Local convenience for THIS machine only, and uv-specific - plain pip ignores
-# it. Editable and a path rather than a git rev on purpose: lunation's working
-# tree carries the 2026-07-24 drizzle changes (drizzleEngine="ported" by default,
-# after the STScI square kernel at pixfrac 1 measured 2.6x more Nyquist-band grid
-# noise) that are not in HEAD. Pinning a rev would silently take older numerics.
-# Change the path to wherever you cloned lunation, or drop this block and install
-# it yourself.
-[tool.uv.sources]
-lunation = { path = "D:/projects/lunation", editable = true }
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["ecl"]
+packages = ["ecl"]   # includes ecl/vendor
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

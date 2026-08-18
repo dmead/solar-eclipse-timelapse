@@ -20,7 +20,7 @@ import os
 import time
 
 import numpy as np
-from lunation.core.warp import resample
+from .vendor.core.warp import resample
 
 from .demosaic import bilinear_rggb
 from .imgio import write_png

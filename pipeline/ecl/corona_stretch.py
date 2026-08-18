@@ -174,7 +174,7 @@ def starlet_contrast(ch, biases=None, log=print):
     inner corona toward white — the same failure the asinh step already avoids
     by deriving one gain from luminance.
     """
-    from lunation.finish.primitives import (lab01_to_rgb, rgb_to_lab01,
+    from .vendor.finish.primitives import (lab01_to_rgb, rgb_to_lab01,
                                             starlet_sharpen)
 
     biases = STARLET_BIASES if biases is None else biases

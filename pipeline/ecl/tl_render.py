@@ -61,8 +61,8 @@ import os
 import time
 
 import numpy as np
-from lunation.core.fftreg import PhaseCorrelator
-from lunation.core.warp import resample, translate
+from .vendor.core.fftreg import PhaseCorrelator
+from .vendor.core.warp import resample, translate
 
 from . import affinity, font5x7, serio
 from .imgio import write_png

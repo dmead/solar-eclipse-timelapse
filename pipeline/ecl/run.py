@@ -48,26 +48,17 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def preflight(log=print):
     """Fail in seconds on a missing dependency, not an hour into a render.
 
-    `lunation` is the one that actually bites: it is a sibling repository rather
-    than a published package, so it cannot be a declared dependency without
-    making `pip install -e .` fail everywhere it is absent. ffmpeg is checked for
-    the same reason - it is the last pass, so an absent binary would otherwise
-    surface only after the whole render had already run.
+    Everything here is a declared PyPI dependency, so a correct install passes
+    this trivially - it exists for the half-installed case. ffmpeg is the one
+    worth checking hard: it is not a Python package, it is only used by the last
+    pass, and without this an absent binary surfaces after the entire render.
     """
     import shutil
 
     missing = []
-    try:
-        import lunation  # noqa: F401
-    except ImportError:
-        missing.append("\n".join([
-            "lunation - the numeric spine (FFT registration, sub-pixel warp,",
-            "      drizzle stacker). It is a separate repository:",
-            "          git clone <lunation-repo> D:\\projects\\lunation",
-            "          python -m pip install -e D:\\projects\\lunation",
-        ]))
     for mod, hint in (("cv2", "opencv-python-headless"), ("psutil", "psutil"),
-                      ("numpy", "numpy"), ("scipy", "scipy"), ("PIL", "pillow")):
+                      ("numpy", "numpy"), ("scipy", "scipy"), ("PIL", "pillow"),
+                      ("skimage", "scikit-image"), ("tifffile", "tifffile")):
         try:
             __import__(mod)
         except ImportError:
