@@ -90,9 +90,57 @@ PROM_MIN_SEP_PX = 90.0
 # put a box around nothing.
 PROM_MIN_SNR = 8.0
 
+# Video frames a totality exposure level needs before prominences are detected on
+# it rather than borrowed. Below this it is a point on the operator's ramp.
+PROM_LEVEL_MIN = 8
+
 # Terminator fits worse than this are not the Moon's limb and are discarded.
 MOON_FIT_MAX_RMS = 12.0
 MOON_TRY_FRAMES = 14
+
+
+def tune(out_dir, log=None):
+    """Resolve the panel geometry from the config against the surveyed radius.
+
+    These are the constants that fail hardest on another camera: every one of
+    them is a box size or a separation measured in pixels on a sensor where the
+    disc happened to be 279 px across.
+    """
+    global PROM_MIN_SEP_PX, PROM_R_INNER, PROM_R_OUTER, PROM_MIN_SNR
+    global PROM_LEVEL_MIN, SPOT_MAX_R, MIN_RING_PX, MOON_FIT_MAX_RMS
+    global CUSP_HALF_MIN, CUSP_HALF_MAX, BEAD_HALF_MIN, BEAD_HALF_MAX
+    global BEAD_MIN_AREA, BEAD_MAX_THICK, BEAD_ARC_MAX, BEAD_ARC_MIN
+    global BEAD_R_INNER, BEAD_R_OUTER, BEAD_SAT, BEAD_NEAR_FRAMES, BEAD_RUN_GAP
+    global ZOOM, PANEL_PX
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from ecl.params import load
+
+    P = load(out_dir, create=False)
+    PROM_MIN_SEP_PX = P.px("panels.prom_sep_r")
+    PROM_R_INNER = P.get("panels.prom_r_inner", PROM_R_INNER)
+    PROM_R_OUTER = P.get("panels.prom_r_outer", PROM_R_OUTER)
+    PROM_MIN_SNR = P.get("panels.prom_min_snr", PROM_MIN_SNR)
+    PROM_LEVEL_MIN = P.get("panels.prom_level_min", PROM_LEVEL_MIN)
+    SPOT_MAX_R = P.get("panels.spot_max_r", SPOT_MAX_R)
+    MIN_RING_PX = max(4, int(P.px("panels.spot_ring_r")))
+    MOON_FIT_MAX_RMS = P.px("panels.moon_fit_max_rms_r")
+    CUSP_HALF_MIN, CUSP_HALF_MAX = P.px("panels.cusp_half_r")
+    BEAD_HALF_MIN, BEAD_HALF_MAX = P.px("panels.bead_half_r")
+    BEAD_MIN_AREA = max(1.0, P.area("beads.min_area_r2"))
+    BEAD_MAX_THICK = P.px("beads.max_thick_r")
+    BEAD_ARC_MAX = P.get("beads.arc_max_deg", BEAD_ARC_MAX)
+    BEAD_ARC_MIN = P.get("beads.arc_min_deg", BEAD_ARC_MIN)
+    BEAD_R_INNER, BEAD_R_OUTER = P.get("beads.annulus", [BEAD_R_INNER, BEAD_R_OUTER])
+    BEAD_SAT = P.get("beads.sat", BEAD_SAT)
+    BEAD_NEAR_FRAMES = P.get("beads.near_frames", BEAD_NEAR_FRAMES)
+    BEAD_RUN_GAP = P.get("beads.run_gap", BEAD_RUN_GAP)
+    ZOOM = P.get("panels.zoom", ZOOM)
+    if log:
+        log(f"  tuned to r={P.radius_px:.0f}px: cusp box "
+            f"{CUSP_HALF_MIN:.0f}-{CUSP_HALF_MAX:.0f}, bead box "
+            f"{BEAD_HALF_MIN:.0f}-{BEAD_HALF_MAX:.0f}, prom separation "
+            f"{PROM_MIN_SEP_PX:.0f} px")
+    return P
 
 
 def box_blur(a, k):
@@ -238,6 +286,140 @@ def find_prominences(data_dir, frame, mx, my, r_moon, n):
     return out
 
 
+"""
+Baily's beads: photosphere through lunar valleys, found by where the sensor
+clipped rather than by how bright something is.
+
+Every other feature here is found by standing over its background. A bead cannot
+be, because it is not merely brighter than the corona - it is 20 to 500 times
+brighter, and the sensor clips solid across it. What the frame carries is not a
+peak but a PLATEAU, and a plateau has no meaningful argmax: the brightest pixel
+of a saturated region is wherever noise happened to land, which is why sampling
+the maximum walked around the arc from frame to frame.
+
+The shape of the clipped region is the measurement. Projected onto azimuth around
+the lunar limb it is one closed 360 degree ring when the filter first comes off,
+and it opens and shrinks monotonically to a 34 degree arc by the time the corona
+exposure starts. That single number - the widest clipped arc - answers both
+questions the panel needs: whether there is a bead, and whether it has shrunk
+enough to be worth magnifying.
+
+The second half of that matters more than it sounds. Pulling a panel's exposure
+down recovers structure only where the sensor did NOT clip; over a plateau it
+turns a white disc into a grey one and shows nothing. So while the arc is wide
+there is genuinely nothing to look at, no matter how it is exposed, and the panel
+is not emitted at all.
+"""
+BEAD_NAZ = 720                  # azimuth bins around the limb, 0.5 deg each
+BEAD_R_INNER = 0.93
+BEAD_R_OUTER = 1.05
+BEAD_SAT = 0.90                 # fraction of full scale counted as clipped
+
+"""
+The panel is gated on the clipped region's THICKNESS, not on its arc.
+
+Arc width was the obvious measure and it is the wrong one. Across the frames
+where the picture changes completely - a solid white plateau resolving into a
+chain of separate beads - the arc only goes from 49 degrees to 30, because the
+beads that survive are spread along the same stretch of limb the plateau covered.
+Gating on it admitted plateaus at any threshold that also admitted beads.
+
+Radial thickness, the clipped area divided by the arc length it spans, separates
+them completely over the same frames:
+
+    f1124   arc 49.0   thick 24.00     flat white square
+    f1142   arc 39.5   thick 13.56
+    f1154   arc 36.5   thick  4.82     chain, knots visible
+    f1192   arc 30.5   thick  1.22
+
+which is the physical difference: a plateau is photosphere filling the whole
+annulus, a bead chain is a thin line of it left between lunar peaks. Threshold
+set from rendered panels - 24 is a white square, 5 is the picture.
+"""
+BEAD_MAX_THICK = 6.0
+
+# Smallest clipped area, superpixel px, still worth calling a bead.
+#
+# Shared with `ecl.beadwindow`, which uses the same floor to decide the window
+# the video dwells on. They must agree: with this at 150 and that at 40 the panel
+# ran f1151-1202 while the dwell held f1189-1255, so the label came off partway
+# through the very sequence it had been slowed down for.
+#
+# The run does not end when the beads do - the clipped region keeps shrinking
+# smoothly, 1132 px at f1151 down to 9 px at f1296, long after the last bead has
+# gone and only the chromosphere is still clipping in the long exposure. Without
+# a floor the panel stayed up to f1300, magnifying a plain arc and calling it
+# Baily's beads.
+from ecl.beadwindow import MIN_AREA as BEAD_MIN_AREA  # noqa: E402
+BEAD_ARC_MAX = 90.0             # loose: rejects the closed ring, nothing else
+BEAD_ARC_MIN = 1.5              # under this it is a hot pixel, not a bead
+
+# Panel box, superpixel px: one size for the whole run, from the median extent of
+# the clipped chain, then clamped. The lower bound keeps a nearly-gone bead from
+# being magnified past its own noise, the upper keeps the box from growing until
+# it is no longer an inset.
+BEAD_BOX_K = 1.35
+BEAD_HALF_MIN = 45.0
+BEAD_HALF_MAX = 80.0
+
+# Measurements a bead run needs before its track is worth a quadratic.
+BEAD_QUAD_MIN = 25
+
+# Frames either side of a state change that count as "at a contact", and the
+# largest hole a bead run may bridge. The gap allows for the odd frame where the
+# arc briefly falls outside the width bounds without the run being two events.
+BEAD_NEAR_FRAMES = 10
+BEAD_RUN_GAP = 4
+
+
+def find_bead_arc(g, mx, my, r_moon, max_value=65535.0):
+    """Clipped limb region: (cx, cy, extent, arc deg, thickness, area).
+
+    The CENTROID is what the panel is centred on, not the midpoint of the widest
+    arc. Once the chain breaks into several beads, which one is widest changes
+    from frame to frame, and a box centred on it teleports between them - measured
+    at 40 to 45 px, alternating every frame or two. The centroid of the whole
+    clipped set does not care how the set is partitioned, so it moves as smoothly
+    as the beads themselves do. The widest arc is still returned, because that is
+    what the "is it small enough to magnify" gate is written against.
+    """
+    h, w = g.shape
+    yy, xx = np.mgrid[0:h, 0:w]
+    rr = np.hypot(xx - mx, yy - my)
+    ann = ((rr > BEAD_R_INNER*r_moon) & (rr < BEAD_R_OUTER*r_moon)
+           & (g >= BEAD_SAT*max_value))
+    if not ann.any():
+        return None
+    ys, xs = yy[ann].astype(np.float64), xx[ann].astype(np.float64)
+    area = float(xs.size)
+    bx, by = float(xs.mean()), float(ys.mean())
+    # p90 rather than max: a single hot pixel off the end of the chain should not
+    # decide the box size for the whole run.
+    ext = float(np.percentile(np.hypot(xs - bx, ys - by), 90))
+    th = np.degrees(np.arctan2(yy[ann] - my, xx[ann] - mx)) % 360.0
+    occ = np.zeros(BEAD_NAZ, bool)
+    occ[np.minimum((th/(360.0/BEAD_NAZ)).astype(int), BEAD_NAZ - 1)] = True
+    if occ.all():
+        return (bx, by, ext, 360.0, area/(2*math.pi*r_moon), area)
+
+    # Contiguous runs, on a circle: the wrap is a real case here, since the arc
+    # sits wherever the last of the photosphere happens to be.
+    d = np.diff(np.r_[occ[-1], occ].astype(np.int8))
+    starts = np.flatnonzero(d == 1)
+    ends = np.flatnonzero(d == -1)
+    if len(ends) and (not len(starts) or ends[0] < starts[0]):
+        ends = np.r_[ends[1:], ends[0]]
+    best = 0
+    for s, e in zip(starts, ends):
+        n = int((e - s) % BEAD_NAZ) or BEAD_NAZ
+        best = max(best, n)
+    if not best:
+        return None
+    deg = best*(360.0/BEAD_NAZ)
+    # Thickness: clipped area over the arc length it covers, in superpixel px.
+    return (bx, by, ext, deg, area/max(r_moon*math.radians(deg), 1.0), area)
+
+
 def fit_moon(data_dir, frame, cx, cy, r_sun, r_moon):
     """Moon centre for one partial frame, from the terminator it casts.
 
@@ -340,7 +522,17 @@ CUSP_INSET_FRAC = 0.35
 # drive the panel to a silly magnification.
 CUSP_THICK_FRAC = 0.5
 CUSP_BOX_K = 1.3
-CUSP_HALF_MIN = 14.0
+# The floor was 14.0 and it was too low, measured 2026-08-16. At 15 superpixel px
+# of arc from a near-tangential limb crossing the crescent is a sliver well under
+# a pixel thick, so the panel faithfully showed a horn with no visible width:
+# frame 0's upper-cusp panel was 1.2% lit against 100% for the sunspot and 72%
+# for the lunar limb, and the same emptiness is in the PJSR render, so it is the
+# sizing and not the port or the position. The horn is correctly located — the
+# measured horn sits at 259.0 deg, the inset at 257.3, and the crescent's middle
+# at 148, so the offset is the intended CUSP_INSET_FRAC push in the right
+# direction. Widening the box is what makes it legible: 1.2% lit at the old
+# floor, 11.0% at a half-box of 42, where the horn reads as a clean taper.
+CUSP_HALF_MIN = 40.0
 CUSP_HALF_MAX = 46.0
 
 # How much shorter the total leader length has to get before a panel is allowed to
@@ -504,6 +696,7 @@ def main():
     ap.add_argument("--cusp-zoom", type=float, default=CUSP_ZOOM)
     ap.add_argument("--panel", type=int, default=PANEL_PX)
     args = ap.parse_args()
+    tune(args.out, log=print)
 
     cfgpath = os.path.join(args.out, "configs", "timelapse.json")
     cfg = json.load(open(cfgpath))
@@ -570,13 +763,39 @@ def main():
     A level is one constant-exposure run, keyed the same way the detector's
     level-bias correction keys it: file plus gain. Each is measured on its own
     middle frame, which costs one extra frame read per level.
+
+    A level has to be long enough to BE a level, though.
+
+    Keying on gain splits a run wherever the exposure changed, which is right when
+    the operator settled somewhere and wrong while they were still moving. The
+    start of 14_14_36 is five "levels" of 4, 2, 1, 1 and 1 frames inside ten video
+    frames - a ramp, not five exposures - and each one got its own detection, its
+    own four prominences and its own ranking. The panels moved 380 to 560 px
+    between consecutive frames there. A level under PROM_LEVEL_MIN borrows the
+    detection from the nearest level in the same capture that clears the bar, so a
+    ramp shows the prominences of the exposure it is heading for.
+
+    Resolve frames are left out entirely: they show no prominence panels, so
+    detecting on them is 82 frame reads for results nothing consumes.
     """
-    unf = [f for f in frames if f["state"] == "unfiltered"]
+    unf = [f for f in frames
+           if f["state"] == "unfiltered" and not f.get("resolve")]
     levels = {}
     for f in unf:
         levels.setdefault((f["file"], round(f["gain"], 4)), []).append(f)
-    pang = {}
-    for key in sorted(levels, key=lambda k: levels[k][0]["utc"]):
+
+    order_l = sorted(levels, key=lambda k: levels[k][0]["utc"])
+    solid = [k for k in order_l if len(levels[k]) >= PROM_LEVEL_MIN] or order_l
+    pang, borrow = {}, {}
+    for key in order_l:
+        if key in solid:
+            continue
+        # Nearest solid level in time, preferring the same capture.
+        t = levels[key][0]["utc"]
+        same = [k for k in solid if k[0] == key[0]] or solid
+        borrow[key] = min(same, key=lambda k: abs(levels[k][0]["utc"] - t))
+
+    for key in solid:
         fs = levels[key]
         mid = fs[len(fs)//2]
         mx, my = moon_of(mid)
@@ -586,6 +805,10 @@ def main():
                  ", ".join("%+.0f%+.0f r=%.2f snr=%.0f"
                            % (p[0], p[1], math.hypot(p[0], p[1])/r_moon, p[2])
                            for p in pang[key])))
+    for key, src in sorted(borrow.items(), key=lambda kv: levels[kv[0]][0]["utc"]):
+        pang[key] = pang[src]
+        print("  level %-14s gain %-9s %3d frm -> borrows gain %s (too short to "
+              "detect on)" % (key[0], key[1], len(levels[key]), src[1]))
 
     """
     Send each feature to its nearest corner, not to a fixed one.
@@ -617,9 +840,72 @@ def main():
     """
     import itertools
     HOLD_FRAMES = 9
-    perms = {k: list(itertools.permutations(range(4), k)) for k in range(1, 5)}
+    """
+    EIGHT slots, not four: the corners plus a midpoint on each edge.
+
+    With only corners, a feature near the middle of an edge has no slot anywhere
+    near it and has to reach to a corner, which drags its leader diagonally across
+    the frame at a steep angle - the panel points down the side of the picture
+    while its subject sits beside it. Four features and four corners also leaves no
+    slack at all: whatever the geometry, every corner is spoken for.
+
+    The extra four are not extra panels. Only the features that exist get drawn, so
+    at four features and eight slots half the slots stay empty and each feature
+    takes whichever is nearest - which is the whole point. It also gives the
+    crossing penalty room to work, since there is now usually a slot on the same
+    side as the subject.
+
+    SIX, not eight: only the left and right midpoints fit.
+
+    The frame is 2240x1680 and the disc is 1168 across, so there is 536 px of
+    clear space beside it and only 256 above and below. A 420 px panel fits the
+    first and not the second - rendered, the top and bottom midpoints sat 164 px
+    over the disc, and the bottom one covered the bead chain it was pointing at.
+    A panel that hides the subject is worse than a long leader, so those two are
+    not offered. Shrinking them to 256 px would fit, at the cost of two panels a
+    different size from the other four.
+
+    Order matters and is shared with `tl_render.draw_insets`: 0-3 are the corners
+    (upper-left, lower-left, upper-right, lower-right), then 4 left and 5 right.
+    """
+    perms = {k: list(itertools.permutations(range(6), k)) for k in range(1, 5)}
     ow, oh = cfg["outW"], cfg["outH"]
-    corner_xy = [(0.0, 0.0), (0.0, oh), (ow, 0.0), (ow, oh)]
+    corner_xy = [(0.0, 0.0), (0.0, oh), (ow, 0.0), (ow, oh),
+                 (0.0, oh / 2), (ow, oh / 2)]
+
+    """
+    A leader must not be routed across the Moon.
+
+    Corners were chosen on leader LENGTH alone, and length does not know what it
+    is drawing over. Measured on the last cut, a leader passed inside the lunar
+    disc on 1891 prominence frames, 1169 lunar-limb frames and most of the cusp
+    frames - one of them within 3 px of the disc centre, so the line ran the full
+    diameter of the subject.
+
+    The disc is the darkest thing in the frame and a hairline over it is far more
+    visible than the same line over corona, which is why this reads worse than the
+    length numbers suggest. Crossing is priced rather than forbidden: with four
+    features spread around a limb and four fixed corners there is not always a
+    clean assignment, and a crossing leader still beats no leader. The penalty is
+    simply larger than any leader can be, so length only breaks ties among
+    assignments that cross equally often.
+    """
+    disc = (ow / 2.0, oh / 2.0)
+
+    def over_disc(fx, fy, cx, cy, r):
+        """Does the segment (fx,fy)-(cx,cy) pass within r of the disc centre?"""
+        dx, dy = cx - fx, cy - fy
+        L = dx*dx + dy*dy
+        t = 0.0 if L == 0 else max(0.0, min(1.0, ((disc[0] - fx)*dx
+                                                  + (disc[1] - fy)*dy) / L))
+        return math.hypot(fx + t*dx - disc[0], fy + t*dy - disc[1]) < r
+
+    CROSS_PENALTY = 10_000.0
+
+    def leader_cost(fx, fy, corner, r):
+        d = math.hypot(fx - corner[0], fy - corner[1])
+        return d + (CROSS_PENALTY if over_disc(fx, fy, corner[0], corner[1], r)
+                    else 0.0)
     cur_perm = None
     pend, pend_n = None, 0
     prev_ident = None
@@ -658,6 +944,126 @@ def main():
             ser_cache[1] = SerFile(os.path.join(args.data, f["file"]))
             ser_cache[0] = f["file"]
         return green_plane(ser_cache[1], f["index"])
+
+    """
+    Beads, on every totality frame - then kept only where they connect to a
+    contact.
+
+    Measuring the clipped arc finds real beads and also finds something else: at
+    the long exposures mid-totality the inner corona and chromosphere clip too,
+    over an arc of 21 to 30 degrees, which passes a width test cleanly. Nine
+    frames of 14_14_36 came back labelled as beads that way, three minutes from
+    any photosphere.
+
+    Colour does not separate them - both are near-white where they clip, R/G 0.94
+    against 0.98 - and a contact-time window is both an ephemeris dependency and
+    too tight, since the beads at second contact run on for fifty frames past the
+    boundary while the corona exposure is coming up.
+
+    What does separate them is CONTINUITY. Beads are the end of a continuous
+    process that starts at the filter change, so the frames carrying them form one
+    unbroken run reaching back to it. A clipped corona mid-totality forms its own
+    run touching nothing. So candidates are grouped into runs and a run is kept
+    only if it contains a frame that is either part of the second-contact resolve
+    or sits within BEAD_NEAR_FRAMES of a state change - the same structural marker
+    the stacking rule uses, and no clock.
+    """
+    cand, order_i, bead_seen, bead_wide = {}, [], 0, 0
+    for j, f in enumerate(frames):
+        if f["state"] != "unfiltered":
+            continue
+        # The annulus goes on the config's OWN disc centre, not on moon_of.
+        #
+        # Through totality the detector measures the Moon directly - ring search
+        # on the corona, then per-frame corona correlation - so cx/cy IS the Moon
+        # here. moon_of adds the terminator track, which is fitted on the partial
+        # phases from ten frames at 7.2 px residual and then extrapolated, and it
+        # sits a steady 12 px away.
+        #
+        # Twelve pixels is fatal for this measurement specifically. The annulus is
+        # only 0.12 r_moon thick, so an offset that size puts it inside the limb on
+        # one side and outside on the other, and as the chain shortens and slides
+        # the fraction of it caught by the misplaced ring keeps changing. That drags
+        # the centroid: measured on moon_of it walks 640 -> 607 over the run, while
+        # on the disc centre it holds at 643 -> 649. The box looked on target and
+        # then left, which is exactly what the drift produces. The prominences keep
+        # moon_of - their annulus is 0.35 r_moon thick and shrugs the offset off.
+        arc = find_bead_arc(plane_of(f), f["cx"], f["cy"], r_moon)
+        if arc is None:
+            continue
+        bead_seen += 1
+        bx, by, ext, deg, thick, area = arc
+        if (deg > BEAD_ARC_MAX or deg < BEAD_ARC_MIN or thick > BEAD_MAX_THICK
+                or area < BEAD_MIN_AREA):
+            bead_wide += 1
+            continue
+        cand[j] = (bx, by, ext)
+        order_i.append(j)
+
+    near = set()
+    for j, f in enumerate(frames):
+        if f.get("resolve"):
+            near.add(j)
+            continue
+        lo, hi = max(0, j - BEAD_NEAR_FRAMES), min(len(frames), j + BEAD_NEAR_FRAMES + 1)
+        if any(frames[k]["state"] != f["state"] for k in range(lo, hi)):
+            near.add(j)
+
+    bead_of, n_runs, n_drop = {}, 0, 0
+    run = []
+    for j in order_i + [None]:
+        if run and (j is None or j - run[-1] > BEAD_RUN_GAP):
+            if any(k in near for k in run):
+                n_runs += 1
+                """
+                One box size for the whole run, and a MODELLED centre - the same
+                two rules the cusps are placed by, and for the same reasons.
+
+                Sizing the box per frame from that frame's own extent re-decides
+                the magnification 87 times: measured, the zoom walked 1.167 to
+                2.100 in per-frame steps with a 0.755 jump in the middle of it,
+                which is the panel breathing. The beads shrink far too slowly for
+                a per-frame size to be telling the truth about anything.
+
+                The centre is fitted against the RAW frame index rather than
+                smoothed over the frame list, because the prominence level repeats
+                each raw frame twice to hold it on screen - a moving average over
+                the list would weight those doubled frames twice and pull the fit
+                toward them. Degree 2: the run is a few seconds long and the beads
+                slide along the limb at a rate that is visibly not constant.
+                """
+                rows = sorted((frames[k]["index"], cand[k][0], cand[k][1]) for k in run)
+                ext = sorted(cand[k][2] for k in run)
+                half = min(max(BEAD_BOX_K*ext[len(ext)//2], BEAD_HALF_MIN),
+                           BEAD_HALF_MAX)
+                deg_fit = 2 if len(rows) >= BEAD_QUAD_MIN else 1
+                ts = [r[0] for r in rows]
+                px = np.polyfit(ts, [r[1] for r in rows], deg_fit)
+                py = np.polyfit(ts, [r[2] for r in rows], deg_fit)
+                dev = sorted(math.hypot(np.polyval(px, r[0]) - r[1],
+                                        np.polyval(py, r[0]) - r[2]) for r in rows)
+                print("  beads: %s f%d-%d, %d frames, deg %d, box half %.0f px "
+                      "(zoom %.2fx), track scatter %.1f px median"
+                      % (frames[run[0]]["file"], rows[0][0], rows[-1][0],
+                         len(run), deg_fit, half, args.panel/(4.0*half),
+                         dev[len(dev)//2]))
+                for k in run:
+                    t = frames[k]["index"]
+                    bead_of[(frames[k]["file"], t)] = (
+                        float(np.polyval(px, t)), float(np.polyval(py, t)), half)
+            else:
+                n_drop += len(run)
+                print("  beads: %s f%d-%d (%d frames) reaches no contact - "
+                      "clipped corona, not beads"
+                      % (frames[run[0]]["file"], frames[run[0]]["index"],
+                         frames[run[-1]]["index"], len(run)))
+            run = []
+        if j is not None:
+            run.append(j)
+    if bead_seen:
+        print("  beads: clipped limb on %d totality frames; %d too wide or too "
+              "small, %d unconnected -> %d panels in %d run(s)"
+              % (bead_seen, bead_wide, n_drop, len(bead_of), n_runs))
 
     raw, mid_of, open_of = {}, {}, {}
     for f in frames:
@@ -729,8 +1135,24 @@ def main():
         """
         feats = []
         if f["state"] == "unfiltered":
-            for dxp, dyp, _snr in pang.get((f["file"], round(f["gain"], 4)), []):
-                feats.append((mx + dxp, my + dyp, "prominence", args.zoom))
+            # Beads first: while one is burning it is the subject of the frame,
+            # and a prominence panel is competing for a corner with something the
+            # viewer can see unaided in the main view.
+            bead = bead_of.get((f["file"], f["index"]))
+            if bead:
+                bx, by, bhalf = bead
+                feats.append((bx, by, "baily's beads", args.panel/(4.0*bhalf)))
+            # No prominence panels through the resolve. They are detected per
+            # exposure level on a frame from that level, and every resolve level
+            # is clipped over a third of the limb - so the detection runs on glare
+            # and the panels magnify a washed-out patch of it. The prominences are
+            # not visible to the viewer there either, which is the honest reason:
+            # they emerge as the photosphere goes, and the panels start when they
+            # do. The bead panel is exempt because it is pointed at the glare
+            # deliberately.
+            if not f.get("resolve"):
+                for dxp, dyp, _snr in pang.get((f["file"], round(f["gain"], 4)), []):
+                    feats.append((mx + dxp, my + dyp, "prominence", args.zoom))
         else:
             spot = (f["cx"] + ox, f["cy"] + oy)
             if math.hypot(spot[0] - mx, spot[1] - my) > r_moon:
@@ -853,11 +1275,11 @@ def main():
 
         rest = [i for i in range(n) if assigned[i] is None]
         if rest:
-            free = [c for c in range(4) if c not in used]
+            free = [c for c in range(len(corner_xy)) if c not in used]
             pick = min(itertools.permutations(free, len(rest)),
                        key=lambda pm: sum(
-                           math.hypot(med[rest[j]][0] - corner_xy[pm[j]][0],
-                                      med[rest[j]][1] - corner_xy[pm[j]][1])
+                           leader_cost(med[rest[j]][0], med[rest[j]][1],
+                                       corner_xy[pm[j]], r_moon)
                            for j in range(len(rest))))
             for j, i in enumerate(rest):
                 assigned[i] = pick[j]
@@ -885,6 +1307,8 @@ def main():
     cfg["insetPanel"] = args.panel
     cfg["insetZoom"] = args.zoom
     cfg["insetBox"] = round(2 * halfsp, 2)
+    # Radius the renderer occludes leader lines behind, in superpixel px.
+    cfg["discR"] = r_moon
     json.dump(cfg, open(cfgpath, "w"))
     print("panel %d px at %.1fx (source box %.0f superpixel); cusps on %d of %d "
           "frames; %d of %d clips move a panel"

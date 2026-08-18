@@ -21,6 +21,7 @@ import numpy as np
 from astropy.io import fits
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from ecl.demosaic import bilinear_rggb  # noqa: E402
 from serlib import SerFile  # noqa: E402
 
 # Full-resolution image scale: the Sun's limb was fitted at 558 px radius against
@@ -32,51 +33,21 @@ PER_SEGMENT = 6
 
 
 def debayer_rggb(raw, W, H):
-    """Bilinear RGGB demosaic at full resolution, vectorised.
+    """Bilinear RGGB demosaic at full resolution.
 
-    Full resolution rather than 2x2 superpixel: Umbra fits the Moon's limb and
-    correlates fine coronal structure, and halving the sampling throws away
-    exactly the detail both of those rely on.
+    Full resolution rather than 2x2 superpixel: fitting the Moon's limb and
+    correlating fine coronal structure both need the sampling that halving the
+    resolution would throw away.
+
+    NOTE: the hand-unrolled implementation that used to live here was wrong at
+    green sites — half of all pixels. It mixed R and B into each other on even
+    rows and read the green value into R on odd rows, so every FITS this script
+    exported before 2026-08-15 has bad colour on half its pixels. Anything
+    derived from those exports should be regenerated. The shared implementation
+    derives its neighbour offsets from the CFA layout instead, and is checked
+    against a synthetic flat-colour mosaic in `tests/test_demosaic.py`.
     """
-    a = raw.astype(np.float32).reshape(H, W)
-    R = np.zeros((H, W), np.float32)
-    G = np.zeros((H, W), np.float32)
-    B = np.zeros((H, W), np.float32)
-
-    # Known sites.
-    R[0::2, 0::2] = a[0::2, 0::2]
-    G[0::2, 1::2] = a[0::2, 1::2]
-    G[1::2, 0::2] = a[1::2, 0::2]
-    B[1::2, 1::2] = a[1::2, 1::2]
-
-    def avg(*planes):
-        s = np.zeros_like(planes[0])
-        for p in planes:
-            s += p
-        return s / len(planes)
-
-    pad = lambda m: np.pad(m, 1, mode="edge")  # noqa: E731
-    ap = pad(a)
-
-    # Green at R and B sites: mean of the four edge neighbours.
-    G[0::2, 0::2] = avg(ap[0:-2:2, 1:-1:2], ap[2::2, 1:-1:2],
-                        ap[1:-1:2, 0:-2:2], ap[1:-1:2, 2::2])
-    G[1::2, 1::2] = avg(ap[1:-1:2, 2::2], ap[3::2, 2::2],
-                        ap[2::2, 1:-1:2], ap[2::2, 3::2])
-
-    # Red and blue at the opposite colour's site: mean of the four diagonals.
-    R[1::2, 1::2] = avg(ap[1:-1:2, 1:-1:2], ap[1:-1:2, 3::2],
-                        ap[3::2, 1:-1:2], ap[3::2, 3::2])
-    B[0::2, 0::2] = avg(ap[0:-2:2, 0:-2:2], ap[0:-2:2, 2::2],
-                        ap[2::2, 0:-2:2], ap[2::2, 2::2])
-
-    # Red and blue at green sites: mean of the two along the correct axis.
-    R[0::2, 1::2] = avg(ap[0:-2:2, 2::2], ap[2::2, 2::2])
-    B[0::2, 1::2] = avg(ap[1:-1:2, 1:-1:2], ap[1:-1:2, 3::2])
-    R[1::2, 0::2] = avg(ap[2::2, 1:-1:2], ap[2::2, 3::2])
-    B[1::2, 0::2] = avg(ap[1:-1:2, 1:-1:2], ap[3::2, 1:-1:2])
-
-    return np.stack([R, G, B], axis=0)
+    return bilinear_rggb(raw, width=W, height=H)
 
 
 def main():

@@ -8,3 +8,7 @@
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Virtualenv (uv-managed; recreate with `uv sync` in pipeline/)
+.venv/
+uv.lock
