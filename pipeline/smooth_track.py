@@ -58,6 +58,45 @@ MIN_RADII = 1.6
 MAX_PADDED_FRACTION = 0.35
 
 
+def tune(out_dir, log=None):
+    """Resolve the track thresholds from the config against the survey.
+
+    Every one of these separates "the detector wobbled" from "the scope was
+    knocked", and both are proportional to the disc, not to the sensor.
+    """
+    global TRUST_FLOOR_PX, MAX_RESIDUAL_PX, UNPLACEABLE_SPREAD_PX
+    global FOLLOW_EXCURSION_PX, FOLLOW_STEP_PX, FOLLOW_LINE_TOL_PX, THRASH_PX
+    global LEVEL_BIAS_MAX_PX, TRUST_K, CORONA_SMOOTH_S, SIZE_STEP
+    global CORONA_RADII, MIN_RADII, MAX_PADDED_FRACTION
+    import os as _os
+    import sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+    from ecl.params import load
+
+    P = load(out_dir, create=False)
+    TRUST_FLOOR_PX = P.px("track.trust_floor_r")
+    MAX_RESIDUAL_PX = P.px("track.max_residual_r")
+    UNPLACEABLE_SPREAD_PX = P.px("track.unplaceable_spread_r")
+    FOLLOW_EXCURSION_PX = P.px("track.follow_excursion_r")
+    FOLLOW_STEP_PX = P.px("track.follow_step_r")
+    FOLLOW_LINE_TOL_PX = P.px("track.follow_line_tol_r")
+    THRASH_PX = P.px("track.thrash_r")
+    LEVEL_BIAS_MAX_PX = P.px("track.level_bias_max_r")
+    TRUST_K = P.get("track.trust_k", TRUST_K)
+    CORONA_SMOOTH_S = P.get("track.corona_smooth_s", CORONA_SMOOTH_S)
+    SIZE_STEP = P.get("geometry.size_step", SIZE_STEP)
+    # CORONA_RADII is a HALF-width: the window is 2 x it x rSun. Halving the
+    # config value here would have halved the output window for anyone who did
+    # not pass --window explicitly.
+    CORONA_RADII = P.get("geometry.output_half_r", CORONA_RADII)
+    MIN_RADII = P.get("geometry.min_half_r", MIN_RADII)
+    MAX_PADDED_FRACTION = P.get("geometry.max_padded_fraction", MAX_PADDED_FRACTION)
+    if log:
+        log(f"  tuned to r={P.radius_px:.0f}px: trust floor "
+            f"{TRUST_FLOOR_PX:.1f}px, thrash {THRASH_PX:.1f}px")
+    return P
+
+
 def robust_line(ts, vs):
     """Least-squares line through (t, v) with iterative outlier rejection."""
     idx = list(range(len(ts)))
@@ -270,6 +309,16 @@ def smooth_series(vs):
 
 
 def accepted(c):
+    # A second-contact resolve frame has no usable detection to accept. Up to a
+    # third of its limb is clipped solid, and the ring search reports a confident
+    # centre for the edge of that plateau rather than for the Moon - which is a
+    # wrong answer, not a missing one, so nothing downstream can tell it from a
+    # good measurement. Rejecting here covers all four uses at once: the line fit,
+    # the residual track, the per-capture health check and the trust gate. Their
+    # positions come from the model, interpolated across 12 s that the frames on
+    # either side pin down.
+    if c.get("resolve"):
+        return False
     if c["method"] == "ring":
         return True          # totality: the ring search is well constrained
     return (c["arc"] >= MIN_ARC_DEG and c["n"] >= MIN_INLIERS
@@ -291,6 +340,7 @@ def main():
     ap.add_argument("--disc-margin", type=float, default=12.0,
                     help="px of clearance demanded around the disc")
     args = ap.parse_args()
+    tune(args.out, log=print)
 
     cfgpath = os.path.join(args.out, "configs", "timelapse.json")
     with open(cfgpath) as fh:
@@ -315,7 +365,19 @@ def main():
         # Gain identifies a constant-exposure run, which is what the detector's
         # exposure-dependent bias is keyed on.
         c["level"] = round(f.get("gain", 0.0), 4)
+        # A corona dwell is NOT marked dense, though it is resampled.
+        #
+        # `dense` means "resampled so tightly that counting these frames would
+        # outvote everything else", and it removes them from the line fit and from
+        # the step test. The prominence level earns that: 360 frames from 211 raw
+        # inside ten seconds. The corona dwell does not - it is 291 DISTINCT raw
+        # frames spread across two whole captures, nine raw frames apart against
+        # the light curve's twenty, and it is the best-measured part of totality.
+        # Marking it dense left the totality line fitted on the three frames that
+        # were neither dwell nor resolve, which put the corona placement 163 px
+        # from the line and then dropped all 1224 totality frames as off-sensor.
         c["dense"] = bool(f.get("dense"))
+        c["resolve"] = bool(f.get("resolve"))
         centres.append(c)
     if missing:
         print("warning: %d frames have no detection; re-run tl-centres.js" % missing)
@@ -576,7 +638,15 @@ def main():
             # times smaller for no physical reason - including them dragged the
             # median under the threshold and sent the whole of totality down the
             # followed path, which then cut 135 frames as "thrashing".
-            hs = [c for c in gs if not c.get("dense")] or gs
+            # Resolve frames are excluded for a second, stronger reason: their
+            # detection is not merely densely sampled, it is meaningless. A third
+            # of the limb is clipped solid and the ring search locks onto the edge
+            # of the plateau, so their deviation from the line is hundreds of px.
+            # Once the bead dwell grew the resolve from 239 frames to 570 that
+            # noise set max(dev) on its own, totality went down the followed path,
+            # and 590 frames were then cut as thrashing.
+            hs = [c for c in gs
+                  if not c.get("dense") and not c.get("resolve")] or gs
             dev = [math.hypot(c["cx"] - (ax * tvar(c) + bx),
                               c["cy"] - (ay * tvar(c) + by)) for c in hs]
             steps = sorted(math.hypot(hs[j]["cx"] - hs[j - 1]["cx"],
@@ -818,7 +888,18 @@ def main():
             # where the model put it. A correlation-placed frame does not depend on
             # that detection at all, so a bad ring search is no longer a reason to
             # drop it - the picture itself said where the frame was.
-            if j not in corr and (rx_raw[j] is None or ry_raw[j] is None
+            #
+            # A resolve frame is exempt for the same reason, one step further on:
+            # there is no usable detection to agree with. Up to a third of its
+            # limb is a saturated plateau, so the ring search has nothing to lock
+            # onto and disagrees with the model by hundreds of pixels. Judged on
+            # that, all 230 of them are dropped and the sequence disappears - the
+            # detector failing on a frame it cannot physically measure is not
+            # evidence about where the Sun was. They ride the modelled line, which
+            # the corona frames on the far side and the filtered frames on the
+            # near side pin to well under a pixel across a 12 s span.
+            if j not in corr and not c.get("resolve") and (
+                                  rx_raw[j] is None or ry_raw[j] is None
                                   or abs(rx_raw[j] - rx[j]) > tol
                                   or abs(ry_raw[j] - ry[j]) > tol):
                 untrusted.append(c["i"])

@@ -1,4 +1,4 @@
-# State as of 2026-08-13 — read this first when resuming
+# State as of 2026-08-18 — read this first when resuming
 
 ## Honest assessment of the timelapse
 
@@ -1121,53 +1121,209 @@ expected.
   `STACK_MAX` to 10 for the partials, which halves both the I/O and the CPU for a
   root-2 cost in noise (3.2x reduction instead of 4.5x).
 
+## PixInsight is gone; the pipeline is Python (2026-08-15 to 08-18)
+
+Every stage now runs under `pipeline/.venv` against `ecl/`, with `lunation`
+(`D:/projects/lunation`) installed editable as the numeric spine. PixInsight was
+only ever an FFT, a bicubic resample and file I/O here — there is not one
+`executeOn` in the old PJSR — so the port is a like-for-like swap with two
+measured improvements. `pjsr/` and the `run-*.mjs` drivers are still on disk and
+still work; nothing has been deleted.
+
+The stacker is better than the one it replaces: same 35/87 frames, same reference
+frame, r=0.9993, and a **23% sharper limb** (10–90 width 2.00 px against 2.60)
+with less undershoot. That is registration accuracy — upsampled-DFT at ~0.01 px
+against PI's 3×3 peak at ~0.5 px — not the interpolation kernel, which moves
+detail by 0.9%.
+
+**A real colour bug fell out of it.** `ser_to_fits.debayer_rggb` swapped R and B
+at green sites — half of every frame. Every FITS exported before 2026-08-15 has
+bad colour. It is now a one-line delegation to `ecl.demosaic.bilinear_rggb`,
+which derives neighbour offsets from the CFA table and is tested against a
+synthetic mosaic in all four Bayer orders.
+
+## Totality is now four explicit dwells, not one cadence
+
+Totality was 24.4 s and spent in the wrong places: 12.0 s on the prominence
+level, 8.0 s on the resolve, and **4.5 s on the corona itself** — while 2,583 raw
+frames of corona sat unused, because the light curve samples one frame in twenty
+and the corona segments were emitted at that cadence. The classic totality view
+was the shortest thing in totality.
+
+| phase | screen time | source | factor |
+|---|---|---|---|
+| resolve (filter off → ring fades) | 9.0 s | 239 raw | 1.1x |
+| Baily's beads | 10.0 s | 67 raw | 4.5x |
+| prominence level | 12.0 s | 144 raw | 2.5x |
+| corona | 9.7 s | 291 raw | **1.0x, no repeats** |
+
+The corona dwell has enough footage that every video frame is a different
+exposure. The bead dwell does not — 2.87 s of beads were recorded — so it repeats
+each frame ~4.5x and visibly steps. That is the footage limit, not a setting;
+`BEADS_S` trades dwell length against stutter and nothing else will.
+
+## The bead window has to be MEASURED, and saturation cannot do it
+
+The diamond ring and the beads are both clipped photosphere and the clipped area
+falls smoothly through both — 56,453 px at f1090 to 5 px at f1300 with no step
+anywhere. satfrac reads 0.00025 at f1160 and 0.00018 at f1180, on either side of
+the moment the ring breaks up. Splitting there put the whole dwell on the ring.
+
+**Shape separates them.** The ring is ONE connected blob; beads are several with
+lunar ridges between, so the discriminator is the fraction of clipped area in the
+largest connected component:
+
+    raw    area  blobs  largest  largest%
+    1090  56453      1    56413      100    one solid blob — diamond ring
+    1168    419      3      391       93
+    1204    136      2       72       53    broken up — beads
+    1240     69      2       18       26    small beads, ridges between
+    1300      5      0        1       20    gone
+
+`ecl/beadwindow.py` measures this and writes `diag/beads.json`. Connected
+components need no disc centre, which is what lets it run BEFORE `tl_centres` —
+and it must, because `gen_timelapse` decides screen time and runs first of all.
+Measured window: **14_13_00 f1189–1255**.
+
+Two things this forces. The window sits INSIDE the prominence level, nowhere near
+the resolve that ends at f1170 — nothing about the exposure changes there, so no
+segment boundary marks it and none ever will; screen time is therefore allocated
+to raw frame ranges, with each segment split into before/window/after. And those
+frames would otherwise inherit the prominence level's overlapping 20-frame
+drizzle groups, averaging the beads into the arc the dwell exists to show
+breaking up, so `bead` frames are forced to `stack: 1`.
+
+## Panels: six slots, exposed for themselves, and leaders behind the disc
+
+**Six slots**, not four: the corners plus the LEFT and RIGHT edge midpoints.
+There is no top or bottom midpoint — the frame is 2240×1680 and the disc 1168
+across, so there is 536 px of clearance beside it and only 256 above and below
+against a 420 px panel. Rendered, those two sat 164 px over the disc and one
+covered the bead chain it pointed at. The two that fit shorten leaders by 8% at
+the median and **26% at p90**, which is the awkward-leader case.
+
+**Leaders pass behind the disc.** No corner assignment can avoid crossing it:
+every frame with two or more panels has NO crossing-free option, because the
+features sit ON the limb while the slots are outside it. The worst leader drew
+1123 px of line across a disc 1168 px wide. `_Canvas.line` now skips the span
+inside `cfg["discR"]`.
+
+**Each panel is exposed for its own subject**, never brighter than the frame
+gain, measured across all three channels so a panel is not white-balanced by
+accident. Panels used to inherit a gain chosen for the corona — 27x around the
+contacts while pointed at photosphere — and rendered as flat white squares.
+
+**The bead box is centred on the config's disc centre, not `moon_of`.** Through
+totality the detector measures the Moon directly, so cx/cy IS the Moon;
+`moon_of` adds the terminator track, fitted on ten partial-phase frames at 7.2 px
+residual and extrapolated, and sits a steady 12 px off. The annulus is only
+0.12 r_moon thick, so 12 px puts it inside the limb on one side and outside on
+the other, and as the chain shortened the misplaced ring clipped part of it out of
+the centroid: the box walked 640 → 607 while the beads held at 643 → 649. One box
+size and a degree-2 track for the whole run, as the cusps already do — sizing per
+frame made the zoom pump 1.167 → 2.100.
+
+## Worker count: the cliff was two bugs, not the hardware
+
+The old default of 4 came from a measurement where 12 workers ran twenty times
+slower than one. That was a spinning disc having its readahead shredded AND
+`scipy.fft` unpinned, so every worker fanned its FFT across all 32 cores. Both
+are fixed. Re-measured on an i9-14900K (24 physical cores, 192 GB), captures
+staged on Z::
+
+    workers      8      12      16      20      24      32
+    s/frame  1.235   1.029   0.891   0.820   0.780   0.749
+
+Monotonic throughout. The I/O-heavy case was checked separately on the corona
+dwell — 291 distinct raw frames, nothing re-read, halves swapped between arms —
+at 1.305 s/frame against 0.796, and cold-against-cold alone is 1.71x. `--workers`
+now defaults to the physical core count. A full 2393-frame render went 50.9 min
+to **26.8 min**. RE-MEASURE ON A SPINNING DISC before trusting this elsewhere.
+
+Pinning workers to performance cores (`--affinity`, `ecl/affinity.py`) was
+measured at **+0.6%** and is not worth using — Windows already places them well,
+and the flag declines above 8 workers anyway.
+
+## Two tools worth knowing about
+
+`python -m ecl.progress --frames <dir> [--watch]` reads the frames on disk rather
+than the job's output, so it works on a render started any way and survives
+restarts. Rate is measured over the last 120 frames, not since the start, and the
+ETA follows the slowest shard divided among shards STILL RUNNING — the bead dwell
+is all `stack=1` and finishes early, and counting those idle workers as active
+put the ETA out by 40%.
+
+`tl_render --resume` skips frames already written as COMPLETE PNGs (checked by
+the IEND marker, one seek each), so a killed render continues instead of starting
+over. Used once already: 2055 skipped, 338 rendered in 4.8 min against 28 for a
+restart.
+
+## Still open
+
+- **The step into the resolve is 6.24x** on one frame — the filter physically
+  coming off, a 15x step in the footage that the gain-jump dissolve softens. It is
+  the largest brightness event in the video.
+- **Post-bead alignment.** Reported as possibly wrong; could not be reproduced.
+  Frame placement through the dense block steps 0.016 px median, and the drizzle
+  groups run at full depth with ZERO rejections at ~1 px against a 4 px bound.
+  Both mechanisms measure healthy, so if it is visible it is something else.
+- **Corona tone mapping** — still the open item from 2026-08-13. Starlet
+  multiscale was tried and failed: four bias schedules all landed at 56–74% of
+  baseline `|grad|`. sd and spread improved, which is why it looked promising;
+  `|grad|` is the metric that answers "is structure missing" and it fell 44%.
+
 ## Current outputs
 
-Three cuts from one render, via `scripts/encode-deliverables.mjs`. 1660 frames,
-55.3 s at 30 fps, all 22 captures; totality 21.3–37.8 s with the prominence level
-held 21.3–33.3 s.
+Three cuts from one render, via `ecl/encode.py`. 2393 frames, 79.8 s at 30 fps,
+all 22 captures.
 
-- `out/final/timelapse.mp4` — 2240×1680, CRF 17, ~99 MB. No scale filter at all.
-- `out/final/timelapse_instagram.mp4` — **1080×810**, High@4.0, capped bitrate,
-  closed 2 s GOP, ~11 MB. Sized so Instagram does not re-encode it: anything wider
-  than 1080 goes through their scaler, which is much worse than ffmpeg's, and thin
-  white leader lines on black sky are exactly the content that shows it. 4:3 sits
-  inside the 4:5–1.91:1 range the feed accepts, so it uploads whole rather than
-  cropped. A 4:5 or 1:1 crop would fill more feed but would cut the corner panels.
-- `out/final/timelapse_preview.mp4` — 960 wide, CRF 26, ~1.7 MB.
+- `timelapse.mp4` — 2240×1680, CRF 17, ~126 MB.
+- `timelapse_instagram.mp4` — **1080×810**, High@4.0, capped bitrate, closed 2 s
+  GOP, ~19 MB. Sized so Instagram does not re-encode it: anything wider than 1080
+  goes through their scaler, which is much worse than ffmpeg's, and thin white
+  leader lines on black sky are exactly the content that shows it. 4:3 sits inside
+  the 4:5–1.91:1 range the feed accepts, so it uploads whole rather than cropped.
+- `timelapse_preview.mp4` — 960 wide, CRF 26, ~3 MB.
 - `out/final/corona_hdr.xisf`, `corona_flat.xisf` — 3631×2037 merged corona.
 - `out/beads/` — 7 contact windows; the C2 diamond ring is in `14_13_00_f1051`.
 
-Render is ~35–40 min at `--workers 12`. Shard wider than 4: the ~500 stacked
-totality frames are contiguous, so with few workers one shard carries them all.
+Working copies are on `Z:/eclipse-work/` (frames `tl_py/`, videos `final/`);
+`out/final/` still holds the 2026-08-15 videos.
 
 ## Rebuild commands
 
 ```bash
-NODE="C:/Users/dan/AppData/Local/Microsoft/WinGet/Packages/OpenJS.NodeJS.LTS_Microsoft.Winget.Source_8wekyb3d8bbwe/node-v24.18.1-win-x64/node.exe"
-PY="D:/projects/umbra/venv/Scripts/python.exe"
-"$PY" gen_timelapse.py --out S:/solar-eclipse/out
-"$NODE" scripts/run-centres.mjs        # only when the frame list gained frames
-"$NODE" scripts/run-corona-track.mjs   # totality pointing, 1.2 min
-"$PY" smooth_track.py --out S:/solar-eclipse/out --window 1120x840 --drop-padded --require-disc
-"$PY" gen_insets.py --out S:/solar-eclipse/out
-"$NODE" scripts/run-timelapse.mjs --workers 12
-"$NODE" scripts/encode-deliverables.mjs   # full, instagram, preview
+PY="S:/solar-eclipse/pipeline/.venv/Scripts/python.exe"
+OUT="S:/solar-eclipse/out"
+DATA="Z:/solar-eclipse/Sun"          # staged copy; S: is a spinning disc
+cd S:/solar-eclipse/pipeline
+
+"$PY" -m ecl.beadwindow --out $OUT --data $DATA        # diag/beads.json
+"$PY" gen_timelapse.py --out $OUT                      # frames + gains + dwells
+"$PY" -m ecl.tl_centres --data-dir $DATA --out $OUT/diag/centres.json
+"$PY" -m ecl.tl_track   --data-dir $DATA --out $OUT/diag/corona_track.json
+"$PY" smooth_track.py --out $OUT --window 1120x840 --drop-padded --require-disc
+"$PY" gen_insets.py --out $OUT --data $DATA --zoom 4.0
+"$PY" -m ecl.tl_render --data-dir $DATA --out-dir Z:/eclipse-work/tl_py
+"$PY" -m ecl.encode --frames Z:/eclipse-work/tl_py --out-dir Z:/eclipse-work/final
 ```
 
 **`out/configs/timelapse.json` is the artifact that feeds the render, and it is
-written by these passes in order.** Reverting sources alone does not change a video
-until the pipeline is re-run — and conversely a good config survives a source
-revert, which is why a render can be correct while the code that produced it is
-not. If in doubt about what a video contains, read the config, not the scripts.
+written by these passes in order.** Reverting sources alone does not change a
+video until the pipeline is re-run — and conversely a good config survives a
+source revert, which is why a render can be correct while the code that produced
+it is not. If in doubt about what a video contains, read the config, not the
+scripts.
 
-The four passes are strictly ordered and each rewrites `configs/timelapse.json` in
-place: gen_timelapse picks frames and gains, run-centres measures a disc centre
-for each, smooth_track adds `cx`/`cy` and drops frames, gen_insets adds `insets`.
+**The passes are strictly ordered and each rewrites `configs/timelapse.json` in
+place.** Start from `gen_timelapse` every time. Re-running a later pass against a
+config an earlier one already rewrote is the single most common way to break this
+— it has happened twice: once running `smooth_track` over its own output, once
+with two chains racing each other on the same file.
 
-**`run-centres.mjs` is not optional when frames were added.** `smooth_track.py`
-joins detections on (file, index), so a frame the last detection pass never saw
-has no centre and is dropped. It prints a warning when that happens — believe it.
+**`tl_centres` is not optional when frames were added.** `smooth_track.py` joins
+detections on (file, index), so a frame the last detection pass never saw has no
+centre and is dropped. It prints a warning — believe it.
 
-Shard wider than 4 now. The 496 stacked totality frames are contiguous, so with
-few workers one shard carries them all; at 12 workers the block spans four.
+`--workers` now defaults to the physical core count; see the note above before
+changing it on other storage.

@@ -74,6 +74,33 @@ SLOWMO_LEVEL_S = 12.0
 MAX_SATFRAC = {"filtered": 0.01, "unfiltered": 0.02}
 
 
+def tune(out_dir, log=None):
+    """Resolve selection and dwell settings from the config."""
+    global TARGET, MAX_SATFRAC, TRANSITION_CEILING, STACK_MAX
+    global SLOWMO_LEVEL_S, RESOLVE_S, BEADS_S, CORONA_S
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from ecl.params import load
+
+    P = load(out_dir, create=False)
+    TARGET = {"filtered": P.get("select.target_filtered", TARGET["filtered"]),
+              "unfiltered": P.get("select.target_unfiltered", TARGET["unfiltered"])}
+    MAX_SATFRAC = {
+        "filtered": P.get("select.max_satfrac_filtered", MAX_SATFRAC["filtered"]),
+        "unfiltered": P.get("select.max_satfrac_unfiltered",
+                            MAX_SATFRAC["unfiltered"])}
+    TRANSITION_CEILING = P.get("select.transition_ceiling", TRANSITION_CEILING)
+    STACK_MAX = P.get("select.stack_max", STACK_MAX)
+    SLOWMO_LEVEL_S = P.get("dwell.prominence_s", SLOWMO_LEVEL_S)
+    RESOLVE_S = P.get("dwell.resolve_s", RESOLVE_S)
+    BEADS_S = P.get("dwell.beads_s", BEADS_S)
+    CORONA_S = P.get("dwell.corona_s", CORONA_S)
+    if log:
+        log(f"  dwells: resolve {RESOLVE_S}s, beads {BEADS_S}s, "
+            f"prominence {SLOWMO_LEVEL_S}s, corona {CORONA_S}s")
+    return P
+
+
 def median(xs):
     s = sorted(xs)
     return s[len(s) // 2]
@@ -95,11 +122,39 @@ def main():
     # head makes it seek between the read and write zones on every frame.
     ap.add_argument("--frames-dir", default="D:/eclipse-work/tl")
     args = ap.parse_args()
+    tune(args.out, log=print)
 
     with open(os.path.join(args.out, "lightcurve.json")) as fh:
         lc = json.load(fh)
     with open(os.path.join(args.out, "segments.json")) as fh:
         man = json.load(fh)
+
+    """
+    The bead window is MEASURED, by `ecl.beadwindow`, not inferred here.
+
+    Saturation cannot find it. The diamond ring and the beads are both clipped
+    photosphere and the clipped area falls smoothly through both - satfrac reads
+    0.00025 at f1160 and 0.00018 at f1180, on either side of the moment the ring
+    breaks up. Drawing the split there put the ten-second dwell on the ring: a
+    single overexposed blob, held while the part worth watching went past at
+    speed.
+
+    What separates them is the shape of the clipped region, and that needs a
+    frame read, which this stage does not do. So it is measured in its own pass
+    and read back here. Without the file the old saturation split still applies,
+    which is wrong in the same way it always was but no worse.
+    """
+    beads = {}
+    bpath = os.path.join(args.out, "diag", "beads.json")
+    if os.path.exists(bpath):
+        with open(bpath) as fh:
+            beads = json.load(fh)
+        for k, v in beads.items():
+            print("  beads measured %s f%d-%d (%.2f s of footage)"
+                  % (k, v["lo"], v["hi"], v["seconds"]))
+    else:
+        print("  no diag/beads.json - run ecl.beadwindow; "
+              "falling back to the saturation split")
 
     points_by_file = {f["name"]: f["points"] for f in lc["files"]}
     path_by_file = {f["name"]: f["path"] for f in lc["files"]}
@@ -202,16 +257,140 @@ def main():
             if stable:
                 slow = max(stable, key=lambda k: gains[k])
 
+        """
+        The second-contact resolve: keep it, and slow it down.
+
+        The leading segments of a totality run are the filter coming off - the
+        last of the photosphere breaking into beads and going out. Measured on
+        14_13_00 the saturated limb goes from a closed 360 deg ring to a 34 deg
+        arc over 279 raw frames, and the annulus median falls 50x while it does.
+        That is the diamond ring and Baily's beads, and it was being thrown away:
+        every one of those frames clips more than MAX_SATFRAC allows, so the video
+        cut from the last filtered frame straight to a corona already three
+        seconds old.
+
+        They are marked rather than merely kept, because three later decisions
+        need to know: the saturation gate must not drop them, they must not be
+        stacked (the beads change inside one drizzle group), and at the light
+        curve's own 20-frame sampling the whole sequence would be fourteen video
+        frames - half a second - so they get their own screen time.
+
+        The bound is the saturation itself, walked forward from the start of the
+        run until a segment comes in under the normal cap. No contact time, no
+        capture named in a constant.
+        """
+        resolve = set()
+        if totality:
+            for k, s in enumerate(run):
+                if median([p["satfrac"] for p in s["points"]]) <= MAX_SATFRAC[s["state"]]:
+                    break
+                resolve.add(k)
+
+        """
+        Three dwells inside totality, because 24 s of it was spent in the wrong
+        places.
+
+        Measured on the previous cut: 12.0 s on the prominence level, 8.0 s on the
+        resolve, and 4.5 s on the corona itself - while 2,583 raw frames of corona
+        sat unused, because the light curve samples one frame in twenty and the
+        corona segments were emitted at that cadence. The classic totality view
+        was the shortest thing in totality.
+
+        So the corona and the bead phase each get an explicit screen time, the same
+        way the prominence level already did. Where a dwell has more raw frames
+        than it needs it thins them and every video frame is a different exposure;
+        where it has fewer it repeats them, and the resolve/beads split is drawn
+        at the saturation where the plateau has become a chain.
+        """
+        # The corona proper: stable totality segments that are neither the
+        # resolve nor the prominence level.
+        corona = {k for k, s in enumerate(run)
+                  if totality and s["kind"] == "stable" and k not in resolve
+                  and k != slow} if totality else set()
+
+        """
+        The bead window CUTS ACROSS segments, so screen time is allocated to raw
+        frame ranges rather than to whole segments.
+
+        Measured, the beads run f1189-1255, which is inside the prominence level
+        and nowhere near the resolve that ends at f1170. Nothing about the
+        exposure changes there - the operator had already settled - so no segment
+        boundary marks it and none ever will. Each segment is therefore split
+        into up to three parts: whatever precedes the window, the window itself,
+        and whatever follows. The middle part is sampled to fill its share of
+        BEADS_S; the outer parts keep the treatment the segment would have had,
+        sharing that phase's own budget between them.
+        """
+        def bead_span(seg):
+            w = beads.get(seg["file"])
+            if not w:
+                return None
+            lo = max(seg["start"], w["lo"])
+            hi = min(seg["start"] + seg["count"], w["hi"] + 1)
+            return (lo, hi) if hi - lo >= 2 else None
+
+        spans = {k: bead_span(s) for k, s in enumerate(run)}
+        n_bead = sum(v[1] - v[0] for v in spans.values() if v)
+
+        def outside(k):
+            """Raw frames of segment k that are NOT in the bead window."""
+            s = run[k]
+            n = s["count"]
+            return n - (spans[k][1] - spans[k][0] if spans[k] else 0)
+
+        n_res = sum(outside(k) for k in resolve)
+        n_cor = sum(outside(k) for k in corona)
+        n_slow = outside(slow) if slow is not None else 0
+
         for k, s in enumerate(run):
             gk = gains[k]
-            if k == slow:
-                for p in dense_points(s, args.fps, SLOWMO_LEVEL_S):
-                    frames.append(mkframe(s, p, gk, dense=True))
-            elif s["kind"] == "stable":
+            s_lo, s_hi = s["start"], s["start"] + s["count"]
+            sp = spans[k]
+            parts = ([(s_lo, sp[0], False), (sp[0], sp[1], True), (sp[1], s_hi, False)]
+                     if sp else [(s_lo, s_hi, False)])
+
+            pts, hold = [], False
+            for lo, hi, is_bead in parts:
+                if hi - lo < 1:
+                    continue
+                if is_bead:
+                    got = stretch_points(s, args.fps,
+                                         BEADS_S * (hi - lo) / max(n_bead, 1),
+                                         lo, hi)
+                    for p in got:
+                        p["_bead"] = True
+                    pts += got
+                elif k in resolve:
+                    # The GAIN still comes from the segment's own kind. Taking a
+                    # single segment gain across the resolve looked right until
+                    # its last frame sat at 0.65 against the 27.31 of the
+                    # prominence level one raw frame later - a 42x step, because
+                    # the operator was ramping right through here and a
+                    # transition has to be followed point by point. The branch
+                    # below does that, so this does not repeat it.
+                    pts += stretch_points(s, args.fps,
+                                          RESOLVE_S * (hi - lo) / max(n_res, 1),
+                                          lo, hi)
+                elif k == slow:
+                    pts += dense_points(s, args.fps,
+                                        SLOWMO_LEVEL_S * (hi - lo) / max(n_slow, 1),
+                                        lo, hi)
+                elif k in corona:
+                    pts += stretch_points(s, args.fps,
+                                          CORONA_S * (hi - lo) / max(n_cor, 1),
+                                          lo, hi)
+                    hold = True
+                else:
+                    pts += [p for p in s["points"] if lo <= p["i"] < hi]
+
+            dense = k == slow
+            if s["kind"] == "stable":
                 # One gain for the whole segment: the camera did not change, so
                 # whatever brightness change happens here is the eclipse itself.
-                for p in s["points"]:
-                    frames.append(mkframe(s, p, gk))
+                for p in pts:
+                    frames.append(mkframe(s, p, gk, resolve=k in resolve,
+                                          hold=hold, dense=dense,
+                                          bead=p.get("_bead", False)))
             else:
                 # Exposure is moving inside this segment; follow it frame by frame
                 # so the operator's ramp does not show up as a flare in the video.
@@ -225,7 +404,7 @@ def main():
                     if nxt:
                         anchor = (TARGET[nxt["state"]] * FULL_SCALE / nxt["p99"]
                                   * nxt["e_in"] / s["e_in"])
-                for p in s["points"]:
+                for p in pts:
                     gp = anchor * s["e_in"] / level(p)
                     # A transition frame must never render brighter than the
                     # stable frames it sits between. The exposure proxy moves fast
@@ -234,7 +413,10 @@ def main():
                     # 0.78 target, which is a white flash for one frame. Capping
                     # on the frame's own p99 bounds that directly.
                     cap = TRANSITION_CEILING * TARGET[s["state"]] * FULL_SCALE / max(p["p99"], 1)
-                    frames.append(mkframe(s, p, min(gp, cap)))
+                    frames.append(mkframe(s, p, min(gp, cap),
+                                          resolve=k in resolve, hold=hold,
+                                          dense=dense,
+                                          bead=p.get("_bead", False)))
 
     frames.sort(key=lambda p: (p["file"], p["index"]))
     # Thinning is for previewing the whole video quickly; the densely resampled
@@ -272,8 +454,21 @@ def main():
     """
     for i, f in enumerate(frames):
         f["stack"] = 1
-        if f.get("dense"):
-            # Dense frames sit one raw frame apart, so the gap-to-the-next rule
+        if f.get("bead"):
+            # Never stacked, and this has to be said HERE rather than left to the
+            # contact-window rule below. The measured bead window sits inside the
+            # prominence level, so these frames are also `dense` and would take
+            # its overlapping twenty-frame groups - averaging the beads into the
+            # smooth arc the whole dwell exists to show breaking up. They are also
+            # 19 raw frames past the state change, so the BEAD_FRAMES window does
+            # not reach them.
+            continue
+        if f.get("resolve"):
+            # Never stacked, and not merely by the gap rule happening to give 1:
+            # the whole sequence is the beads changing inside a group's span.
+            continue
+        if f.get("dense") or f.get("hold"):
+            # Dense and hold frames sit one raw frame apart, so the gap-to-next rule
             # would hand them a group of one and undo the drizzle exactly where it
             # matters most. Their groups OVERLAP instead: consecutive frames share
             # nineteen of their twenty raw frames. Nothing about drizzle requires
@@ -285,6 +480,41 @@ def main():
         gap = (nxt["index"] - f["index"]
                if nxt is not None and nxt["file"] == f["file"] else STACK_MAX)
         f["stack"] = max(1, min(STACK_MAX, gap, f["seg_end"] - f["index"]))
+
+    """
+    Baily's beads must NOT be stacked.
+
+    Everything above exists to average twenty raw frames into one, which is the
+    right trade everywhere except here. The beads and the diamond ring are the
+    one subject in this capture that evolves faster than a group spans: a group
+    is 0.86 s and the beads change visibly inside that, so stacking averages
+    them into the smooth arc that `ser-frames.js` was written to avoid. The
+    render loses the drizzle's noise advantage across the contact window, and
+    that is the correct trade - a sharp bead is the picture, a clean smooth arc
+    is not.
+
+    Found from the state change rather than from a contact time. The filter came
+    off at 19:13:35 and second contact was ~19:13:46, so the filtered/unfiltered
+    boundary in the frame list brackets the beads without needing an ephemeris,
+    and it survives the frame list being rebuilt at a different cadence. Third
+    contact fell in a recording gap, but the rule is written for both edges
+    because the last capture before that gap still ends on a bead.
+    """
+    marked = 0
+    for i, f in enumerate(frames):
+        if f.get("dense"):
+            continue
+        near = False
+        for j in range(max(0, i - BEAD_FRAMES), min(len(frames), i + BEAD_FRAMES + 1)):
+            if frames[j]["state"] != f["state"]:
+                near = True
+                break
+        if near and f["stack"] > 1:
+            f["stack"] = 1
+            marked += 1
+    if marked:
+        print("  beads: %d frames within %d of a contact left unstacked"
+              % (marked, BEAD_FRAMES))
 
     # Drop blown frames.
     #
@@ -298,14 +528,29 @@ def main():
     # Totality is exempt. There the brightest frames are the diamond ring and the
     # exposure ramp after the filter comes off, which are the event itself rather
     # than a mistake.
-    blown = [f for f in frames if f["satfrac"] > MAX_SATFRAC[f["state"]]]
+    # The resolve is exempt: every frame in it clips by construction, and it is
+    # the event rather than a mistake. See the note where `resolve` is built.
+    blown = [f for f in frames
+             if f["satfrac"] > MAX_SATFRAC[f["state"]] and not f.get("resolve")]
     if blown:
         by_file = {}
         for f in blown:
             by_file[f["file"]] = by_file.get(f["file"], 0) + 1
         print("  dropped %d blown filtered frames: %s" % (
             len(blown), ", ".join("%s x%d" % (k, v) for k, v in sorted(by_file.items()))))
-        frames = [f for f in frames if f["satfrac"] <= MAX_SATFRAC[f["state"]]]
+        frames = [f for f in frames
+                  if f["satfrac"] <= MAX_SATFRAC[f["state"]] or f.get("resolve")]
+    for name, sel in (("resolve", lambda f: f.get("resolve")),
+                      ("beads", lambda f: f.get("bead")),
+                      ("prominence", lambda f: f.get("dense") and not f.get("bead")),
+                      ("corona", lambda f: f.get("hold"))):
+        g = [f for f in frames if sel(f)]
+        if not g:
+            continue
+        uniq = len(set((f["file"], f["index"]) for f in g))
+        print("  %-11s %s f%d-%d -> %d frames (%.1fs) from %d raw (%.1fx)"
+              % (name, g[0]["file"], g[0]["index"], g[-1]["index"], len(g),
+                 len(g) / args.fps, uniq, len(g) / max(uniq, 1)))
     for f in frames:
         del f["satfrac"]
 
@@ -344,8 +589,82 @@ def main():
 # shutter, matching the video's own sampling cadence.
 STACK_MAX = 20
 
+# Video frames either side of a filtered/unfiltered boundary that are rendered
+# unstacked so the beads survive. At ~0.86 s per frame this is about 9 s each
+# way, which comfortably brackets the bead sequence at second contact.
+BEAD_FRAMES = 10
 
-def mkframe(seg, point, gain, dense=False):
+# Screen time for the approach half of the second-contact resolve: the plateau
+# shrinking, before it breaks into a chain.
+RESOLVE_S = 9.0
+
+# Screen time for the bead phase, and the saturation at which the resolve is
+# judged to have reached it.
+#
+# The threshold is MAX_SATFRAC's own unfiltered value, which is the point where a
+# frame stops being grossly overexposed and would have passed the ordinary gate -
+# so the bead dwell is exactly the part of the resolve that is a normal picture.
+#
+# It is set wide on purpose. Only about 2.4 s of bead footage exists before the
+# operator opened up for the corona, so a ten-second dwell has to repeat frames,
+# and how many depends entirely on how much of the tail is claimed: drawn at
+# satfrac 0.003 the window is 33 raw frames and every one is held 9.2x, which is
+# a slideshow. At 0.02 it is about 70 and the factor drops to ~4. The beads go on
+# being visible through the first second of the prominence level after this,
+# which is separately held for SLOWMO_LEVEL_S.
+BEADS_S = 10.0
+BEAD_SATFRAC = MAX_SATFRAC["unfiltered"]
+
+# Screen time for the corona proper - the stable totality levels that are neither
+# the resolve nor the prominence exposure.
+CORONA_S = 10.0
+
+
+def stretch_points(seg, fps_out, target_s, lo, hi):
+    """Sample raw frames [lo, hi) to fill target_s of screen time.
+
+    Never stops short of the range end, unlike `dense_points` - that bound exists
+    to keep a drizzle group from running off the end of a segment, and the two
+    callers here are either unstacked (the resolve) or stacked with overlapping
+    groups (the corona dwell), so neither needs it.
+
+    Repeats a frame only when the range is shorter than the target asks for. The
+    corona has 2,583 raw frames for a ten-second dwell and every video frame is a
+    different exposure; the bead phase has about seventy for the same ten seconds,
+    so it holds each one for three or four. That is a real limit of the footage -
+    two seconds of beads were recorded - and repeating is the honest way to spend
+    it, since the alternative is inventing frames that were never exposed.
+
+    The measured fields are INTERPOLATED between the light curve's samples rather
+    than taken from the nearest one. The curve is sampled every 20 raw frames, and
+    the gain is a function of those numbers, so snapping to the nearest sample
+    quantizes the gain into 20-frame plateaus. Everywhere else in the video that
+    is invisible - the plateaus are one video frame wide. Here one plateau is two
+    thirds of a second of slow motion, and the operator's exposure ramp falls
+    inside this segment: the gain climbs 1.85x and then 2.45x between neighbouring
+    samples, which without interpolation is two visible steps in brightness.
+    """
+    src = sorted(seg["points"], key=lambda p: p["i"])
+    want = max(2, int(round(target_s * fps_out)))
+    num = [k for k, v in src[0].items() if isinstance(v, (int, float))]
+    out = []
+    for j in range(want):
+        i = lo + (j * (hi - lo)) // want
+        # Bracketing samples, clamped at both ends of the segment.
+        n = next((k for k, p in enumerate(src) if p["i"] > i), len(src))
+        b = src[min(n, len(src) - 1)]
+        a = src[max(0, n - 1)]
+        w = 0.0 if a["i"] == b["i"] else (i - a["i"]) / (b["i"] - a["i"])
+        w = min(max(w, 0.0), 1.0)
+        p = {k: a[k] + w * (b[k] - a[k]) for k in num}
+        p["i"] = i
+        p["t"] = a["t"] + (i - a["i"]) / seg["fps"]
+        out.append(p)
+    return out
+
+
+def mkframe(seg, point, gain, dense=False, resolve=False, hold=False,
+            bead=False):
     f = {
         "src": seg["path"], "file": seg["file"], "index": point["i"],
         "state": seg["state"], "kind": seg["kind"],
@@ -357,10 +676,16 @@ def mkframe(seg, point, gain, dense=False):
     }
     if dense:
         f["dense"] = True
+    if resolve:
+        f["resolve"] = True
+    if hold:
+        f["hold"] = True
+    if bead:
+        f["bead"] = True
     return f
 
 
-def dense_points(seg, fps_out, target_s):
+def dense_points(seg, fps_out, target_s, lo=None, hi=None):
     """One video frame per RAW frame, repeated to fill target_s of screen time.
 
     Two bounds, and both matter.
@@ -381,9 +706,13 @@ def dense_points(seg, fps_out, target_s):
     what the footage actually contains.
     """
     src = seg["points"]
-    lo, hi = seg["start"], seg["start"] + seg["count"] - STACK_MAX
+    s0, s1 = seg["start"], seg["start"] + seg["count"] - STACK_MAX
+    # A caller may ask for part of the segment - the bead window cuts across this
+    # one - but never for more of it than the group bound allows.
+    lo = s0 if lo is None else max(lo, s0)
+    hi = s1 if hi is None else min(hi, s1)
     if hi - lo < 2:
-        return src
+        return [p for p in src if lo <= p["i"] < max(hi, lo + 1)] or src[:1]
     uniq = list(range(lo, hi))
     want = max(len(uniq), int(round(target_s * fps_out)))
     out = []

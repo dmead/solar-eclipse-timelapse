@@ -1,0 +1,50 @@
+[project]
+name = "solar-eclipse-pipeline"
+version = "0.1.0"
+description = "2024-04-08 total solar eclipse processing pipeline (PixInsight-free)"
+requires-python = ">=3.11"   # tomllib
+
+# The numeric spine comes from lunation: SER memmap reads, FFT phase
+# correlation, sub-pixel warp, kappa-sigma rejection, the drizzle stacker,
+# XISF I/O and the Kasa disc fit. Everything solar-specific lives here.
+# numpy/scipy/opencv/pillow/astropy all arrive transitively; they are named
+# again only where this repo imports them directly.
+# `lunation` is deliberately NOT listed here. It is a sibling repository, not a
+# published package, so naming it would make `pip install -e .` fail on any
+# machine that does not already have it at the path below. Install it explicitly
+# (see RUNNING.md); `python -m ecl.run` checks for it up front and says so
+# clearly rather than failing inside a pass an hour later.
+dependencies = [
+    "numpy>=2.0",
+    "pillow>=12.3.0",
+    "psutil>=5.9",
+    "opencv-python-headless>=4.10",
+    "scipy>=1.11",
+]
+
+[project.optional-dependencies]
+raw = ["rawpy>=0.22"]      # camera RAW: CR2/CR3/NEF/ARW/DNG/RAF/ORF/RW2
+fits = ["astropy>=6.1"]    # FITS input and export
+
+[dependency-groups]
+dev = ["pytest>=8.3"]
+
+# Local convenience for THIS machine only, and uv-specific - plain pip ignores
+# it. Editable and a path rather than a git rev on purpose: lunation's working
+# tree carries the 2026-07-24 drizzle changes (drizzleEngine="ported" by default,
+# after the STScI square kernel at pixfrac 1 measured 2.6x more Nyquist-band grid
+# noise) that are not in HEAD. Pinning a rev would silently take older numerics.
+# Change the path to wherever you cloned lunation, or drop this block and install
+# it yourself.
+[tool.uv.sources]
+lunation = { path = "D:/projects/lunation", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ecl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
