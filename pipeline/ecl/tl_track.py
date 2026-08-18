@@ -35,7 +35,7 @@ import os
 import time
 from collections import Counter, OrderedDict
 
-from lunation.core.fftreg import PhaseCorrelator
+from .vendor.core.fftreg import PhaseCorrelator
 
 from . import serio
 from .source import open_source

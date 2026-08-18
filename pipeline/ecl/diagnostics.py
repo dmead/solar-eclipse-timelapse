@@ -11,7 +11,7 @@ import math
 import os
 
 import numpy as np
-from lunation.core.warp import resample
+from .vendor.core.warp import resample
 
 from .imgio import read_xisf, write_png
 

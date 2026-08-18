@@ -24,7 +24,7 @@ import json
 import os
 import time
 
-from lunation.stack import stacker
+from .vendor.stack import stacker
 
 from . import slicer
 

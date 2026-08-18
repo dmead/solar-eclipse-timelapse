@@ -18,7 +18,7 @@ mono/LRGB pipeline. Both live here.
 
 import numpy as np
 
-from lunation.io.ser import CFA_LAYOUT
+from .vendor.io.ser import CFA_LAYOUT
 
 __all__ = ["superpixel", "superpixel_mono", "green_plane", "bilinear_rggb"]
 

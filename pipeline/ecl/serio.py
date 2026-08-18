@@ -19,7 +19,7 @@ import sys
 
 import numpy as np
 
-from lunation.io.ser import SerReader
+from .vendor.io.ser import SerReader
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from serlib import COLOR_IDS, SerFile, ticks_to_utc  # noqa: E402

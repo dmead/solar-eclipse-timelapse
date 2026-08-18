@@ -47,11 +47,16 @@ it for your account only:
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 ```
 
+That is the whole install. Every dependency comes from PyPI — there is no
+sibling repository to clone and no local path to configure. The numeric spine
+(FFT registration, sub-pixel warp, the drizzle stacker, SER and XISF I/O) is
+vendored in `ecl/vendor/`; see that package's docstring for its provenance.
+
 **Optional readers**, only if you have that kind of data:
 
 ```powershell
-python -m pip install rawpy      # camera RAW: CR2/CR3/NEF/ARW/DNG/RAF/ORF/RW2
-python -m pip install astropy    # FITS
+python -m pip install ".[raw]"     # CR2/CR3/NEF/ARW/DNG/RAF/ORF/RW2
+python -m pip install ".[fits]"    # FITS
 ```
 
 The pipeline tells you which one you need if it meets a file it cannot open, and
