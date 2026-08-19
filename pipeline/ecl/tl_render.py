@@ -197,7 +197,7 @@ def default_workers():
     return len(affinity.core_groups()) or (os.cpu_count() or 4)
 
 
-__all__ = ["render_frames", "crop_gain", "accumulate", "centroid", "DEFAULT_ENGINE"]
+__all__ = ["render_frames", "crop_gain", "accumulate", "centroid", "DEFAULT_ENGINE", "shard_spans"]
 
 
 # ------------------------------------------------------------------- drizzle
@@ -775,6 +775,34 @@ def _shard(args):
                              log=lambda m: None)
 
 
+def shard_spans(frames, workers):
+    """[start, end) spans for the worker pool, contiguous IN THE VIDEO.
+
+    --resume drops the frames already on disk, and what is left is many separate
+    runs - a kill leaves a gap at the end of every shard. Slicing that compacted
+    list into equal pieces puts a join inside a shard, and the renderer's own
+    discontinuity test then fires on it and cross-dissolves the new frame against
+    the previously rendered one, which at a join belongs to a different part of
+    the video. That shipped: seq 177 came out 11.7% brighter than a clean render
+    of the same frame, decaying over exactly the dissolve length, and read on
+    screen as the Moon's limb stepping backwards.
+
+    So a boundary is placed at every discontinuity in `seq` as well as at every
+    step. More jobs than workers is fine - the pool queues them - and a full
+    render has no discontinuities, so it is unaffected.
+    """
+    n = len(frames)
+    if n == 0:
+        return []
+    step = max(1, math.ceil(n / max(workers, 1)))
+    cuts = {0, n}
+    cuts.update(range(0, n, step))
+    cuts.update(i for i in range(1, n)
+                if frames[i]["seq"] != frames[i - 1]["seq"] + 1)
+    edges = sorted(cuts)
+    return [(a, b) for a, b in zip(edges, edges[1:]) if b > a]
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--config", default="S:/solar-eclipse/out/configs/timelapse.json")
@@ -893,14 +921,10 @@ def main(argv=None):
     can leave more jobs than workers, which is fine - the pool queues them - and
     it changes nothing for a full render, where there are no discontinuities.
     """
-    step = math.ceil(n / args.workers)
-    fs = cfg["frames"]
-    cuts = {0, n}
-    cuts.update(range(0, n, step))
-    cuts.update(i for i in range(1, n) if fs[i]["seq"] != fs[i - 1]["seq"] + 1)
-    edges = sorted(cuts)
-    jobs = [(cfg, a, b, args.engine) for a, b in zip(edges, edges[1:]) if b > a]
-    runs = 1 + sum(1 for i in range(1, n) if fs[i]["seq"] != fs[i - 1]["seq"] + 1)
+    spans = shard_spans(cfg["frames"], args.workers)
+    jobs = [(cfg, a, b, args.engine) for a, b in spans]
+    runs = 1 + sum(1 for i in range(1, n)
+                   if cfg["frames"][i]["seq"] != cfg["frames"][i - 1]["seq"] + 1)
     print(f"rendering {n} frames in {len(jobs)} shards on {args.workers} workers"
           + (f" ({runs} contiguous runs)" if runs > 1 else ""))
     t0 = time.time()
