@@ -104,6 +104,25 @@ GAP_FRAMES = 60
 # a genuine handover between normalizations triggers it.
 GAIN_JUMP = 3.0
 
+# Fractional change in a frame's mean level that disqualifies it from the group.
+#
+# The stacker takes N consecutive raw frames on the assumption that they share an
+# exposure, which Stage F guarantees by never letting a group cross a segment
+# boundary. That guarantee is only as good as the boundary: measured in
+# 14_00_16, the camera changed at raw index 948 and the segment ends at 953, so
+# the last group averaged eight frames at one level with five at +71% and was
+# then scaled by the pre-change gain. On screen, a 10% flash.
+#
+# The gap this threshold sits in is wide. Within a group the level moves 0.5% -
+# that is the Moon advancing and the seeing, over 0.86 s. The smallest exposure
+# step the operator made between adjacent segments is 39%. Anything from a few
+# percent to a quarter would do; 8% is in the middle of the log range.
+#
+# Whole-frame mean is the proxy rather than a percentile of the photosphere:
+# it costs a single pass, it is dominated by the lit crescent, and it does not
+# care where the crescent is.
+GROUP_LEVEL_TOL = 0.08
+
 # Percentile of the frame taken as the sky pedestal, subtracted before the gain,
 # and how much of it to remove. Set the fraction to 0 to render exactly the way
 # the PJSR original did.
@@ -143,6 +162,7 @@ def tune(out_dir, log=None):
     """Resolve the render constants from the config against the survey."""
     global DRIZZLE, MAX_GROUP_SHIFT_PX, GAMMA, SHOULDER_KNEE, SHOULDER_CEIL
     global PEDESTAL_PCT, PEDESTAL_FRAC, GAIN_JUMP, GAP_FRAMES, PANEL_EXPOSE
+    global GROUP_LEVEL_TOL
     global PANEL_EXPOSE_PCT, PANEL_EXPOSE_TARGET, DEFAULT_ENGINE
     from .params import load
 
@@ -156,6 +176,7 @@ def tune(out_dir, log=None):
     PEDESTAL_FRAC = P.get("render.pedestal_frac", PEDESTAL_FRAC)
     GAIN_JUMP = P.get("render.gain_jump", GAIN_JUMP)
     GAP_FRAMES = P.get("render.gap_frames", GAP_FRAMES)
+    GROUP_LEVEL_TOL = P.get("render.group_level_tol", GROUP_LEVEL_TOL)
     PANEL_EXPOSE = P.get("panels.expose", PANEL_EXPOSE)
     PANEL_EXPOSE_PCT = P.get("panels.expose_pct", PANEL_EXPOSE_PCT)
     PANEL_EXPOSE_TARGET = P.get("panels.expose_target", PANEL_EXPOSE_TARGET)
@@ -558,6 +579,7 @@ def render_frames(frames, cfg, engine=None, log=print):
     dissolve_index = -1
     dissolve_gain = None
     written = 0
+    n_level_cut = 0
 
     try:
         for k, fr in enumerate(frames):
@@ -584,11 +606,21 @@ def render_frames(frames, cfg, engine=None, log=print):
                 aligner.initialize(G)
                 acc = [accumulate(R), accumulate(G), accumulate(B)]
                 n_stack = 1
+                # The reference frame's level. A group is a set of frames that
+                # share an exposure; one that does not share it is not a member,
+                # however well it registers. See GROUP_LEVEL_TOL.
+                ref_level = float(G.mean())
                 for j in range(1, stack):
                     idx = fr["index"] + j
                     if idx >= ser.frame_count:
                         break
                     R2, G2, B2 = ser.planes(idx)
+                    if ref_level > 0 and abs(float(G2.mean()) / ref_level - 1.0) \
+                            > GROUP_LEVEL_TOL:
+                        # The operator changed the exposure inside this group.
+                        # Everything after it belongs to the next one.
+                        n_level_cut += stack - j
+                        break
                     sh = aligner.evaluate(G2)
                     dx, dy = ((sh["dx"], sh["dy"]) if isinstance(sh, dict) else sh)
                     if abs(dx) > MAX_GROUP_SHIFT_PX or abs(dy) > MAX_GROUP_SHIFT_PX:
@@ -690,6 +722,9 @@ def render_frames(frames, cfg, engine=None, log=print):
             ser.close()
 
     log(f"  {written} frames in {(time.time() - t0) / 60:.1f} min")
+    if n_level_cut:
+        log(f"  {n_level_cut} raw frame(s) left out of their group: the exposure "
+            f"changed before the segment did")
     return written
 
 
