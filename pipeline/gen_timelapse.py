@@ -80,7 +80,7 @@ def tune(out_dir, log=None):
     """Resolve selection and dwell settings from the config."""
     global TARGET, MAX_SATFRAC, TRANSITION_CEILING, STACK_MAX
     global FLATTEN_MIN_AREA, FLATTEN_SAT, FLATTEN_MAX
-    global SLOWMO_LEVEL_S, RESOLVE_S, BEADS_S, CORONA_S
+    global SLOWMO_LEVEL_S, RESOLVE_S, BEADS_S, CORONA_S, BEAD_STACK
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from ecl.params import load
@@ -100,6 +100,7 @@ def tune(out_dir, log=None):
     SLOWMO_LEVEL_S = P.get("dwell.prominence_s", SLOWMO_LEVEL_S)
     RESOLVE_S = P.get("dwell.resolve_s", RESOLVE_S)
     BEADS_S = P.get("dwell.beads_s", BEADS_S)
+    BEAD_STACK = P.get("select.bead_stack", BEAD_STACK)
     CORONA_S = P.get("dwell.corona_s", CORONA_S)
     if log:
         log(f"  dwells: resolve {RESOLVE_S}s, beads {BEADS_S}s, "
@@ -565,13 +566,21 @@ def main():
     for i, f in enumerate(frames):
         f["stack"] = 1
         if f.get("bead"):
-            # Never stacked, and this has to be said HERE rather than left to the
+            # A SHORT stack, and this has to be said HERE rather than left to the
             # contact-window rule below. The measured bead window sits inside the
             # prominence level, so these frames are also `dense` and would take
             # its overlapping twenty-frame groups - averaging the beads into the
             # smooth arc the whole dwell exists to show breaking up. They are also
             # 19 raw frames past the state change, so the BEAD_FRAMES window does
             # not reach them.
+            #
+            # It used to be stack 1 outright, on the grounds that the beads change
+            # inside a group's span. True of a 20-frame group, which is 0.86 s;
+            # not true of BEAD_STACK frames, which is 0.13 s against a 2.87 s
+            # window. Raw frames here are single exposures at a short shutter and
+            # they are visibly grainy - and the dwell repeats each one several
+            # times, which freezes that grain in place where the eye can study it.
+            f["stack"] = max(1, min(BEAD_STACK, f["seg_end"] - f["index"]))
             continue
         if f.get("resolve"):
             # Never stacked, and not merely by the gap rule happening to give 1:
@@ -731,7 +740,18 @@ RESOLVE_S = 9.0
 # a slideshow. At 0.02 it is about 70 and the factor drops to ~4. The beads go on
 # being visible through the first second of the prominence level after this,
 # which is separately held for SLOWMO_LEVEL_S.
-BEADS_S = 10.0
+# Screen seconds held on the beads.
+#
+# The window is 67 raw frames, 2.87 s of real time, so this is also a choice of
+# how many times each frame repeats: 10 s was a 4.5x hold, about 6.7 fps, which
+# reads as hanging on far too long after the beads have gone. 4.5 s is a 2x hold
+# and still more than a doubling of real time.
+BEADS_S = 4.5
+
+# Raw frames averaged for a bead video frame. See the note in the stacking loop:
+# short enough that the beads do not move within it, long enough to take the
+# grain off a single short exposure.
+BEAD_STACK = 3
 BEAD_SATFRAC = MAX_SATFRAC["unfiltered"]
 
 # Screen time for the corona proper - the stable totality levels that are neither

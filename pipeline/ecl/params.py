@@ -77,7 +77,7 @@ DEFAULTS = {
         # shoulder ran out at v=1.57 while the totality limb reaches v=23.5, so
         # 8% of it rendered as one flat grey. The corona is at v=0.03, far below
         # the knee, so widening this cannot darken it.
-        "shoulder_max": 24.0,
+        "shoulder_max": 3.0,
         # Largest intra-group alignment shift believed, in radii. 4 px at r=279.
         "max_group_shift_r": 0.0143,
         "engine": "ported",
@@ -162,7 +162,7 @@ DEFAULTS = {
     },
     "dwell": {
         "resolve_s": 9.0,
-        "beads_s": 10.0,
+        "beads_s": 4.5,
         "prominence_s": 12.0,
         "corona_s": 10.0,
     },
@@ -186,6 +186,11 @@ DEFAULTS = {
         "max_satfrac_unfiltered": 0.02,
         "transition_ceiling": 1.15,
         "stack_max": 20,
+        # Raw frames averaged for a bead video frame. The beads change fast, so
+        # this is far shorter than stack_max - but not 1, because a single short
+        # exposure is grainy and the dwell repeats each frame several times,
+        # which holds that grain still where the eye can study it.
+        "bead_stack": 3,
         # Smallest crescent, in r^2, whose level can be told from the sky well
         # enough to normalize a frame on. 2000 px at r=292.
         "min_crescent_r2": 0.0235,
@@ -230,6 +235,7 @@ _COMMENTS = {
     "beads.max_blob_frac": "above this the clipped region is one blob: diamond ring, not beads",
     "dwell.resolve_s": "screen seconds for the filter-off sequence",
     "dwell.beads_s": "screen seconds held on Baily's beads",
+    "select.bead_stack": "raw frames averaged per bead video frame",
     "dwell.prominence_s": "screen seconds on the short prominence exposure",
     "dwell.corona_s": "screen seconds on the corona proper",
     "track.trust_floor_r": "detection/model disagreement tolerated, in radii",
@@ -337,13 +343,44 @@ def read_config(path):
             return tomli.load(f)
 
 
+def _report_pins(on_disk, log):
+    """Report config keys that override a default, or that name nothing.
+
+    Silence here is the failure mode: a pinned value looks exactly like a
+    default, so a default that has been improved since the file was written goes
+    on being ignored with nothing to show for it.
+    """
+    pinned, stale = [], []
+    for sec, vals in (on_disk or {}).items():
+        if not isinstance(vals, dict):
+            continue
+        for k, v in vals.items():
+            d = DEFAULTS.get(sec, {}).get(k, _MISSING)
+            if d is _MISSING:
+                stale.append(f"{sec}.{k}")
+            elif d != v:
+                pinned.append(f"{sec}.{k}={v} (default {d})")
+    if pinned:
+        log("  config pins %d setting(s) over the defaults: %s"
+            % (len(pinned), ", ".join(sorted(pinned))))
+    if stale:
+        log("  config has %d key(s) that no longer exist and do nothing: %s"
+            % (len(stale), ", ".join(sorted(stale))))
+
+
+_MISSING = object()
+
+
 def load(out_dir, survey_data=None, overrides=None, create=True, log=None):
     """DEFAULTS <- eclipse.toml <- overrides, resolved against the survey."""
     path = os.path.join(out_dir, CONFIG_NAME)
     if create and write_template(path) and log:
         log(f"wrote {path} - edit it to tune; it will not be overwritten")
-    data = _merge(DEFAULTS, read_config(path))
+    on_disk = read_config(path)
+    data = _merge(DEFAULTS, on_disk)
     data = _merge(data, overrides)
+    if log:
+        _report_pins(on_disk, log)
 
     if survey_data is None:
         sp = os.path.join(out_dir, "survey.json")
