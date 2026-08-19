@@ -1235,6 +1235,43 @@ irrelevant — the fault was introduced downstream of every one of them. It took
 re-rendering the same frames a second way and diffing the two to see it, and that
 comparison is the one to reach for first next time.
 
+### And the fix for it lost the dissolves it should have kept
+
+Making shards contiguous stopped the wrong cross-dissolve. It did not give the
+right one back. A shard that starts mid-video has no previous frame, so
+`prev_out` is None and a genuine cut at its first frame renders as a **hard cut**
+instead of a cross-fade. Measured at third contact against the same frames
+rendered in one piece:
+
+```
+seq   1861  1862  1863  1864  1865
+one piece  237   196   152    98    17     the dissolve
+sharded    237    15    14    16    17     a cut
+```
+
+True in principle all along — any shard boundary landing on a cut lost its
+dissolve — but a full render puts 24 boundaries in predictable places while a
+resume puts one per surviving run, in arbitrary ones. Three landed on cuts.
+
+A shard now renders the `dissolve` frames preceding its span as **warm-up**: the
+same work, no output. They come from the UNCOMPACTED frame list, because the
+frames before a resume span in the compacted one belong to the previous run —
+which is the ghost again, arriving by the back door. Three frames per shard,
+about 2% of a resume, and verified identical to the one-piece render.
+
+The single-worker path is folded into the same code while fixing this. It
+rendered `cfg["frames"]` straight through, which under `--resume` meant straight
+through every join: the same ghost, sitting in the path most likely to be used to
+reproduce a bug by hand.
+
+**This is the third distinct fault in the same twenty lines**, and the pattern is
+worth naming. Each fix was correct about the thing it fixed and silent about a
+neighbouring assumption it broke — contiguity fixed the ghost and broke the
+dissolve; the dissolve warm-up would have reintroduced the ghost had it read the
+compacted list. Sharding a sequential process is not a local change, and the
+check that catches it every time is the same one: render the same frames a second
+way and diff.
+
 ### The segment boundary lands after the exposure change
 
 Genuinely in the data: the raw photosphere jumps **27% at seq 179** (index 940–952
