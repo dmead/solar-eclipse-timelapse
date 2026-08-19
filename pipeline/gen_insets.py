@@ -121,6 +121,7 @@ def tune(out_dir, log=None):
     global BEAD_MIN_AREA, BEAD_MAX_THICK, BEAD_ARC_MAX, BEAD_ARC_MIN
     global BEAD_R_INNER, BEAD_R_OUTER, BEAD_SAT, BEAD_NEAR_FRAMES, BEAD_RUN_GAP
     global ZOOM, PANEL_PX, MIN_CLEAR_R, CLEAR_WEIGHT, CONTINUITY_PX
+    global CONTINUITY_MAX_EXTRA, SPREAD_WEIGHT
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from ecl.params import load
 
@@ -146,6 +147,9 @@ def tune(out_dir, log=None):
     MIN_CLEAR_R = P.get("panels.min_clear_r", MIN_CLEAR_R)
     CLEAR_WEIGHT = P.get("panels.clear_weight", CLEAR_WEIGHT)
     CONTINUITY_PX = P.get("panels.continuity_px", CONTINUITY_PX)
+    CONTINUITY_MAX_EXTRA = P.get("panels.continuity_max_extra",
+                                 CONTINUITY_MAX_EXTRA)
+    SPREAD_WEIGHT = P.get("panels.spread_weight", SPREAD_WEIGHT)
     if log:
         log(f"  tuned to r={P.radius_px:.0f}px: cusp box "
             f"{CUSP_HALF_MIN:.0f}-{CUSP_HALF_MAX:.0f}, bead box "
@@ -594,24 +598,48 @@ CLEAR_WEIGHT = 2.0
 # Those three are the floor, not a tuning failure.
 CONTINUITY_PX = 2000.0
 
+# How much extra leader, in px, keeping a panel in place may cost before it is
+# made to move.
+#
+# A flat continuity charge is right while the subject is near its panel and wrong
+# once it is not. Measured at seq 1705, a prominence on the LEFT limb kept the
+# lower-right corner - a 1027 px leader - because the free `left` slot saved only
+# 679 px against a 2000 px charge to move. At that distance the panel is no
+# longer following its subject; it is a long line across the picture.
+#
+# Swept at spread 500:
+#
+#   cap           none    600    400    250
+#   leader p90     946    945    887    664
+#   across disc   1831   1794   1540   1222
+#   panels moved     6      5      3      3
+#
+# 250 costs nothing in stability - it moves FEWER panels than no cap at all,
+# because a panel dragged out of position drags its neighbours with it.
+CONTINUITY_MAX_EXTRA = 250.0
+
 # Pixels of extra leader length worth paying per radian of extra spacing between
-# panels. Length alone always bunches: the shortest leaders are the ones that
-# never leave the crowded side of the frame, so with four prominences on the left
-# of the disc all four panels stack down the left edge.
+# panels. Length alone bunches: the shortest leaders are the ones that never
+# leave the crowded side of the frame, so with four prominences on the left of
+# the disc all four panels stack down the left edge.
 #
-# Swept over the whole video, counting frames where three or more panels end up
-# on one half of the frame:
+# It was 2000, and at that weight it does more than stop bunching - it refuses
+# an edge slot standing right beside its own subject whenever two corners are
+# free. `left` between UL and LL scores a 37 degree gap against 74 for four
+# corners, which at 2000 is a 1292 px penalty; the leader it would save is
+# rarely that long. Measured over the video, `left` was used 342 times against
+# 2123 for UL.
 #
-#   weight      0    400   1000   2000   4000   8000
-#   packed   1157   1086    660    342    342    342
-#   min gap    37     37     74     74     74     74   degrees
-#   leader     560    570    715    728    728    728   px at p90
+# Re-swept with the continuity cap below in place:
 #
-# It saturates at 2000 - past that the spread term dominates every comparison it
-# can win and nothing further changes. The residue of 342 is not a tuning
-# failure: a three-panel clip has no balanced arrangement across six slots, and
-# some of those genuinely belong on one side.
-SPREAD_WEIGHT = 2000.0
+#   spread          0    250    500   1000   2000
+#   leader p90    945    887    664    946    946
+#   across disc  2163   1869   1222   2299   2299   panels, of 7567
+#   packed       1252   1172    959    342    342   frames
+#
+# 500 is the turning point: enough to keep panels off one edge, not so much that
+# a panel will cross the frame to avoid sitting next to its neighbour.
+SPREAD_WEIGHT = 500.0
 
 
 def find_cusps(g, cx, cy, r_sun):
@@ -1408,6 +1436,18 @@ def main():
             if same:
                 want[i] = min(same, key=lambda p: math.hypot(med[i][0] - p[0],
                                                              med[i][1] - p[1]))[3]
+        # Drop the preference where holding the slot has stopped being cheap.
+        # Without this a panel keeps a corner its subject has walked away from,
+        # because the flat charge to move is larger than the leader it saves.
+        for i in range(n):
+            if want[i] is None:
+                continue
+            d_best = min(math.hypot(med[i][0] - corner_xy[c][0],
+                                    med[i][1] - corner_xy[c][1]) for c in slots)
+            d_held = math.hypot(med[i][0] - corner_xy[want[i]][0],
+                                med[i][1] - corner_xy[want[i]][1])
+            if d_held - d_best > CONTINUITY_MAX_EXTRA:
+                want[i] = None
 
         # Slot centres, ordered around the frame the same way.
         s_ang = [math.atan2(c[1] - cy0, c[0] - cx0) for c in corner_xy]

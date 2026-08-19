@@ -100,6 +100,12 @@ DEFAULTS = {
         # is. Panels moving mid-video reads as chaos however good each individual
         # arrangement is, so this is deliberately far larger than any leader.
         "continuity_px": 2000.0,
+        # Extra leader, in px, that keeping a panel in place may cost before it
+        # is made to move. Without a cap a panel keeps a corner its subject has
+        # walked away from.
+        "continuity_max_extra": 250.0,
+        # Leader px worth paying per radian of extra spacing between panels.
+        "spread_weight": 500.0,
         "expose": True,
         "expose_pct": 99.5,
         "expose_target": 0.85,
@@ -194,6 +200,8 @@ _COMMENTS = {
     "panels.occlude_leaders": "hide the span of a leader that crosses the Moon",
     "panels.clear_weight": "leader px paid per px of extra clearance - the corner preference",
     "panels.continuity_px": "leader px paid to keep a panel in the slot it already holds",
+    "panels.continuity_max_extra": "extra leader px that keeping a panel may cost",
+    "panels.spread_weight": "leader px paid per radian of spacing between panels",
     "panels.cusp_half_r": "[min, max] cusp box half-width, in radii",
     "panels.bead_half_r": "[min, max] bead box half-width, in radii",
     "panels.prom_sep_r": "minimum separation between prominence picks, in radii",
