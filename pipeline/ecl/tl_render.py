@@ -907,6 +907,52 @@ def shard_spans(frames, workers):
     return [(a, b) for a, b in zip(edges, edges[1:]) if b > a]
 
 
+def sample_frames(frames, dissolve=3):
+    """A subset that shows every DISTINCT thing the video does.
+
+    Picked from structure rather than by stepping every Nth frame, because the
+    things worth looking at are not evenly spaced: a clip layout can last twenty
+    frames, and a cut is exactly one frame wide. Stepping would miss both and
+    still cost more.
+
+    Three kinds of frame:
+      * each distinct clip layout - same capture, same feature labels - at its
+        start and its middle, which is what shows panel placement and exposure;
+      * the neighbourhood of every cut, which is where dissolves live and where
+        the shard bugs kept landing;
+      * the first, middle and last of every dwell, which is where the dwells are
+        judged.
+    """
+    n = len(frames)
+    if not n:
+        return []
+    keep = set()
+
+    clips = {}
+    for i, f in enumerate(frames):
+        key = (f.get("file"), tuple(x.get("label") for x in (f.get("insets") or [])))
+        clips.setdefault(key, []).append(i)
+    for idxs in clips.values():
+        keep.add(idxs[0])
+        keep.add(idxs[len(idxs)//2])
+
+    pf, pi, pg = None, -1, None
+    for i, f in enumerate(frames):
+        g = f.get("gain") or 1.0
+        jumped = (f.get("file") != pf or f.get("index", 0) - pi > GAP_FRAMES
+                  or (pg and max(g/pg, pg/g) > GAIN_JUMP))
+        if jumped and pf is not None:
+            keep.update(range(max(0, i - 1), min(n, i + dissolve + 2)))
+        pf, pi, pg = f.get("file"), f.get("index", 0), g
+
+    for flag in ("resolve", "bead", "dense", "hold"):
+        idxs = [i for i, f in enumerate(frames) if f.get(flag)]
+        if idxs:
+            keep.update({idxs[0], idxs[len(idxs)//2], idxs[-1]})
+
+    return sorted(keep)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--config", default="S:/solar-eclipse/out/configs/timelapse.json")
@@ -927,6 +973,9 @@ def main(argv=None):
                          "without rewriting timelapse.json")
     ap.add_argument("--engine", default=None, choices=["skimage", "ported"],
                     help="intra-group correlator (default skimage)")
+    ap.add_argument("--sample", action="store_true",
+                    help="render a representative subset into <out-dir>_sample "
+                         "for review; never touches the real frames")
     ap.add_argument("--resume", action="store_true",
                     help="skip frames already written as complete PNGs, so a "
                          "killed render continues instead of starting over")
@@ -955,6 +1004,22 @@ def main(argv=None):
     # Kept whole: --resume drops frames from cfg["frames"], and a shard still
     # needs the frames that came BEFORE it in the video to warm its dissolve.
     all_frames = cfg["frames"]
+
+    if args.sample:
+        """
+        Into its own directory, always.
+
+        A sample frame sitting in the deliverable set is indistinguishable from
+        a real one, and --resume would skip it forever. Naming the directory
+        rather than trusting the caller to is the only version of this that
+        cannot go wrong.
+        """
+        picked = sample_frames(cfg["frames"], cfg.get("dissolve", 3))
+        cfg["outDir"] = cfg["outDir"].rstrip("/\\") + "_sample"
+        cfg["frames"] = [cfg["frames"][i] for i in picked]
+        print(f"sample: {len(picked)} of {len(all_frames)} frames "
+              f"({100.0*len(picked)/max(len(all_frames), 1):.0f}%) -> "
+              f"{cfg['outDir']}")
 
     if args.resume:
         """

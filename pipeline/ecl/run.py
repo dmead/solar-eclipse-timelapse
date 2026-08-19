@@ -99,6 +99,9 @@ def main(argv=None):
     ap.add_argument("--from", dest="start", default=None,
                     help="begin at this pass and run the rest")
     ap.add_argument("--only", default=None, help="run just these, comma separated")
+    ap.add_argument("--sample", action="store_true",
+                    help="render a representative subset for review, not the "
+                         "whole video (see tl_render --sample)")
     ap.add_argument("--dry-run", action="store_true",
                     help="survey, write the config, print the plan, run nothing")
     args = ap.parse_args(argv)
@@ -163,6 +166,8 @@ def main(argv=None):
         elif name == "render":
             a = ["--data-dir", data, "--out-dir", frames,
                  "--config", os.path.join(out, "configs", "timelapse.json")]
+            if args.sample:
+                a.append("--sample")
         elif name == "encode":
             a = ["--frames", frames, "--out-dir", os.path.join(out, "final"),
                  "--config", os.path.join(out, "configs", "timelapse.json")]
