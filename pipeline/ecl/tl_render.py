@@ -711,6 +711,11 @@ def render_frames(frames, cfg, engine=None, log=print):
             # under parallel sharding a frame's position within its shard is not
             # its position in the video.
             seq = fr.get("seq", k)
+            # Warm-up frames are rendered for their dissolve state alone: a shard
+            # starting mid-video needs the previous frame's OUTPUT to cross-fade
+            # against, and the only way to have it is to have made it.
+            if fr.get("_warm"):
+                continue
             write_png(f"{out_dir}/seq_{seq:05d}.png", rgb, bit_depth=8)
             written += 1
 
@@ -765,14 +770,14 @@ def _init_worker(cpus=None, slot=None):
 
 
 def _shard(args):
-    cfg, a, b, engine = args
+    cfg, a, b, engine, warm = args
     import scipy.fft
 
     # set_workers is a context manager, so the limit has to wrap the work
     # rather than be set once at import.
     with scipy.fft.set_workers(1):
-        return render_frames(cfg["frames"][a:b], cfg, engine=engine,
-                             log=lambda m: None)
+        return render_frames(list(warm) + cfg["frames"][a:b], cfg,
+                             engine=engine, log=lambda m: None)
 
 
 def shard_spans(frames, workers):
@@ -848,6 +853,9 @@ def main(argv=None):
     # render the same numbered frames they would in a full run.
     for i, fr in enumerate(cfg["frames"]):
         fr.setdefault("seq", i)
+    # Kept whole: --resume drops frames from cfg["frames"], and a shard still
+    # needs the frames that came BEFORE it in the video to warm its dissolve.
+    all_frames = cfg["frames"]
 
     if args.resume:
         """
@@ -887,21 +895,10 @@ def main(argv=None):
     # shard would overwrite the others' output — the PJSR driver assigned `seq`
     # for exactly this reason.
     n = len(cfg["frames"])
-    if args.workers <= 1:
-        render_frames(cfg["frames"], cfg, engine=args.engine)
-        return
 
     # Contiguous shards: each keeps one SER open and its own dissolve state, the
     # same trade the PJSR driver made. The launch mutex it needed is gone —
     # that existed only for the PixInsight instance-slot race.
-    import multiprocessing
-    from concurrent.futures import ProcessPoolExecutor
-
-    # Must happen before the pool is created: spawned children inherit this
-    # environment and read it while importing numpy.
-    for k in _THREAD_ENV:
-        os.environ[k] = "1"
-
     """
     Shards must be contiguous IN THE VIDEO, not merely in the list.
 
@@ -922,12 +919,43 @@ def main(argv=None):
     it changes nothing for a full render, where there are no discontinuities.
     """
     spans = shard_spans(cfg["frames"], args.workers)
-    jobs = [(cfg, a, b, args.engine) for a, b in spans]
+    warm_n = cfg.get("dissolve", 3)
+    jobs = []
+    for a, b in spans:
+        # Frames immediately before this span IN THE VIDEO, from the uncompacted
+        # list: under --resume the frames before it in cfg["frames"] belong to
+        # the previous run and would reintroduce the ghost this replaced.
+        first = cfg["frames"][a]["seq"]
+        lo = max(0, first - warm_n)
+        warm = [dict(f, _warm=True) for f in all_frames[lo:first]]
+        jobs.append((cfg, a, b, args.engine, warm))
+    n_warm = sum(len(j[4]) for j in jobs)
     runs = 1 + sum(1 for i in range(1, n)
                    if cfg["frames"][i]["seq"] != cfg["frames"][i - 1]["seq"] + 1)
     print(f"rendering {n} frames in {len(jobs)} shards on {args.workers} workers"
-          + (f" ({runs} contiguous runs)" if runs > 1 else ""))
+          + (f" ({runs} contiguous runs)" if runs > 1 else "")
+          + (f", +{n_warm} warm-up frames for the dissolves" if n_warm else ""))
     t0 = time.time()
+
+    if args.workers <= 1:
+        # Same spans, same warm-up, no pool. This path used to render
+        # cfg["frames"] straight through, which under --resume meant straight
+        # through the joins between runs - the ghost, in the path most likely to
+        # be used to reproduce a bug by hand.
+        total = 0
+        for j in jobs:
+            total += _shard(j)
+        print(f"{total} frames in {(time.time() - t0) / 60:.1f} min")
+        return
+
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    # Must happen before the pool is created: spawned children inherit this
+    # environment and read it while importing numpy.
+    for k in _THREAD_ENV:
+        os.environ[k] = "1"
+
     cpus, slot = [], None
     if args.affinity:
         cpus = affinity.plan(args.workers)
