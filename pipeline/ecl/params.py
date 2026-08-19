@@ -154,6 +154,15 @@ DEFAULTS = {
         "max_satfrac_unfiltered": 0.02,
         "transition_ceiling": 1.15,
         "stack_max": 20,
+        # Smallest crescent, in r^2, whose level can be told from the sky well
+        # enough to normalize a frame on. 2000 px at r=292.
+        "min_crescent_r2": 0.0235,
+        # Above this the crescent is clipped in the raw data and its level says
+        # nothing about the exposure.
+        "crescent_sat": 0.97,
+        # Largest rescale the within-capture flattening may apply. Beyond this
+        # the measurement is wrong rather than the gain.
+        "flatten_max": 2.0,
     },
 }
 
@@ -167,6 +176,9 @@ _COMMENTS = {
     "render.max_group_shift_r": "largest believable intra-group shift, in radii",
     "render.engine": "'ported' or 'skimage' phase correlator",
     "render.group_level_tol": "level change that drops a raw frame from its stacking group",
+    "select.min_crescent_r2": "smallest crescent, in r^2, that can be normalized on",
+    "select.crescent_sat": "crescent level above which the raw data is clipped",
+    "select.flatten_max": "largest within-capture brightness correction allowed",
     "panels.size_frac": "panel edge as a fraction of the output short side",
     "panels.min_clear_r": "smallest panel-to-disc gap, in radii; slots tighter than this are dropped",
     "panels.clear_weight": "leader px paid per px of extra clearance - the corner preference",
