@@ -111,7 +111,7 @@ def tune(out_dir, log=None):
     global CUSP_HALF_MIN, CUSP_HALF_MAX, BEAD_HALF_MIN, BEAD_HALF_MAX
     global BEAD_MIN_AREA, BEAD_MAX_THICK, BEAD_ARC_MAX, BEAD_ARC_MIN
     global BEAD_R_INNER, BEAD_R_OUTER, BEAD_SAT, BEAD_NEAR_FRAMES, BEAD_RUN_GAP
-    global ZOOM, PANEL_PX, USE_TOP_BOTTOM
+    global ZOOM, PANEL_PX, MIN_CLEAR_R, CLEAR_WEIGHT, CONTINUITY_PX
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from ecl.params import load
 
@@ -135,7 +135,9 @@ def tune(out_dir, log=None):
     BEAD_NEAR_FRAMES = P.get("beads.near_frames", BEAD_NEAR_FRAMES)
     BEAD_RUN_GAP = P.get("beads.run_gap", BEAD_RUN_GAP)
     ZOOM = P.get("panels.zoom", ZOOM)
-    USE_TOP_BOTTOM = P.get("panels.use_top_bottom", USE_TOP_BOTTOM)
+    MIN_CLEAR_R = P.get("panels.min_clear_r", MIN_CLEAR_R)
+    CLEAR_WEIGHT = P.get("panels.clear_weight", CLEAR_WEIGHT)
+    CONTINUITY_PX = P.get("panels.continuity_px", CONTINUITY_PX)
     if log:
         log(f"  tuned to r={P.radius_px:.0f}px: cusp box "
             f"{CUSP_HALF_MIN:.0f}-{CUSP_HALF_MAX:.0f}, bead box "
@@ -536,15 +538,53 @@ CUSP_BOX_K = 1.3
 CUSP_HALF_MIN = 40.0
 CUSP_HALF_MAX = 46.0
 
-# How much shorter the total leader length has to get before a panel is allowed to
-# change corners between clips. A near-tie must not be enough.
-LAYOUT_MARGIN = 0.20
-
 # Panel inset from the frame edge, FINE px - must match draw_insets.
 PANEL_MARGIN = 24
-# Below this a panel is too small to read; six slots are used instead.
-PANEL_MIN_PX = 200
-USE_TOP_BOTTOM = True
+
+SLOT_NAMES = ["upper-left", "lower-left", "upper-right", "lower-right",
+              "left", "right", "top", "bottom"]
+
+# Smallest gap between a panel and the disc edge, as a fraction of the Moon's
+# radius. A slot that cannot make it is not offered.
+#
+# This replaces a rule that shrank the panel until the top and bottom slots
+# "cleared" the disc. They did not: the formula took the free space and
+# subtracted the margin, so the panel edge landed EXACTLY on the limb - zero gap,
+# measured, in the delivered cut. A panel touching the subject it points at reads
+# as a mistake even when it technically fits.
+MIN_CLEAR_R = 0.15
+
+# Leader px worth paying per px of extra clearance.
+#
+# This is the corner preference, expressed as the reason corners are preferable
+# rather than as a list of favoured slots: in any rectangular frame the corners
+# are simply the roomiest places to put a box, so preferring room prefers corners
+# and keeps doing something sensible on a frame shape where it no longer holds.
+# Angular spread alone actively prefers the OPPOSITE - four slots at top, bottom,
+# left and right are 90 degrees apart against 74/106 for the corners - which is
+# how the two tightest slots in the frame became the two most used.
+#
+# Swept over the whole video at continuity 2000:
+#
+#   clear_weight   0.0   0.5   1.0   1.5   2.0   3.0   5.0
+#   in a corner    85%   85%   85%   95%   95%   95%   95%
+#   jumps            3     3     4     4     4     4     4
+#
+# It saturates at 1.5 and costs one extra panel move, on a clip where the whole
+# arrangement changes anyway.
+CLEAR_WEIGHT = 2.0
+
+# Leader px worth paying to leave a panel in the slot it already holds.
+#
+# Panels that move mid-video read as chaos however good each arrangement is on
+# its own, and with nothing carrying a layout forward every clip re-decided from
+# scratch and could move all of them at once. Deliberately larger than any leader
+# can be, so a panel moves only when the geometry leaves no choice.
+#
+# Three moves survive at any value, including 20000 - the prominences genuinely
+# travel round the limb, and holding their old slots would require a crossing.
+# Those three are the floor, not a tuning failure.
+CONTINUITY_PX = 2000.0
 
 # Pixels of extra leader length worth paying per radian of extra spacing between
 # panels. Length alone always bunches: the shortest leaders are the ones that
@@ -837,35 +877,22 @@ def main():
               "detect on)" % (key[0], key[1], len(levels[key]), src[1]))
 
     """
-    Send each feature to its nearest corner, not to a fixed one.
+    Send each feature to a nearby slot, not to a fixed one.
 
-    With a fixed mapping the leader lines cross the frame diagonally - the cusps
-    sweep right around the limb over 46 minutes, so any corner assigned to one is
-    wrong for half the video. Choosing the assignment that minimises total line
-    length is a small problem, solved by trying every way of putting k features in
-    4 corners.
+    With a fixed mapping the leaders cross the frame diagonally - the cusps sweep
+    right around the limb over 46 minutes, so any slot assigned to one is wrong
+    for half the video. Which slot goes to which feature is a small enough problem
+    to solve exhaustively, and it is solved once per clip, below.
 
-    Changing it every frame would make the panels flicker between subjects, so a
-    new assignment has to win for HOLD_FRAMES consecutive frames before it is
-    adopted. Features move slowly and smoothly, so in practice this switches a
-    handful of times, at the moments where a different corner genuinely is nearer.
-
-    The hold is abandoned outright when the feature LIST changes rather than
-    moves. It smooths a drifting optimum; it must not carry an assignment across a
-    discontinuity, and there are two: the number of features changing, and a new
-    totality exposure level, whose prominences are detected separately and ranked
-    by their own strengths. A held permutation maps slot number to corner, so
-    after a re-ranking it sends slot 1 wherever slot 1 used to go and the panels
-    end up pointing across each other. Measured on 14_14_36 f340 the held layout
-    cost 2377 px of leader line against 1875 for this frame's own optimum, and the
-    two extra hundreds were two lines crossing over the middle of the corona.
-
-    Minimising total length is also what keeps the leaders from crossing at all: a
-    minimum-length matching cannot contain a crossing pair, since swapping any two
-    crossing assignments is strictly shorter by the triangle inequality.
+    One claim that used to live here is worth keeping only as a warning: that
+    minimising total leader length prevents crossings on its own, because a
+    minimum-length matching cannot contain a crossing pair (swapping one is
+    strictly shorter, by the triangle inequality). That is true of PURE length and
+    the cost has not been pure length for some time - clearance, spacing and
+    continuity all pull against it, and any of them will happily buy a crossing.
+    Crossings are counted and priced explicitly for exactly that reason.
     """
     import itertools
-    HOLD_FRAMES = 9
     """
     EIGHT slots, not four: the corners plus a midpoint on each edge.
 
@@ -881,18 +908,19 @@ def main():
     crossing penalty room to work, since there is now usually a slot on the same
     side as the subject.
 
-    Eight slots where the frame has room, six where it does not.
+    All eight are offered; the frame decides how many survive.
 
     A panel may not sit on the disc - it would hide the very thing it points at,
-    and a bottom-centre panel once covered the bead chain it was magnifying. The
-    disc is round and the frame is not, so there is far more clear space beside
-    it than above it: 616 px against 316 in this window. A full-size panel fits
-    the sides and not the top.
+    and a bottom-centre panel once covered the bead chain it was magnifying. That
+    used to be handled by shrinking the panel until the top and bottom "fitted",
+    which is how they ended up with a measured gap of exactly zero.
 
-    So the panel is SHRUNK to whatever clears the disc when the top and bottom
-    are wanted - 292 px instead of 420 here, 70% of the edge - and that buys the
-    whole perimeter to spread panels around instead of three slots a side. Set
-    panels.use_top_bottom = false to keep the bigger panels instead.
+    Clearance is now the rule instead of the workaround: each slot is turned into
+    the rectangle the renderer will actually draw, the gap from that rectangle to
+    the limb is measured, and anything under MIN_CLEAR_R is dropped. The panel
+    keeps its configured size. In this 4:3 window that leaves the four corners
+    (149 px of gap) and the two sides (86 px), and drops top and bottom - a wider
+    frame, or a smaller disc inside it, keeps all eight.
 
     Order matters and is shared with `tl_render.draw_insets`: 0-3 the corners
     (upper-left, lower-left, upper-right, lower-right), 4 left, 5 right, then
@@ -900,22 +928,30 @@ def main():
     """
     ow, oh = cfg["outW"], cfg["outH"]
     corner_xy = [(0.0, 0.0), (0.0, oh), (ow, 0.0), (ow, oh),
-                 (0.0, oh / 2), (ow, oh / 2)]
-    if USE_TOP_BOTTOM:
-        # Largest panel whose top/bottom placement still clears the disc, in
-        # FINE px; the slot list only grows if one actually fits.
-        fit = int((2 * oh - 2 * 2 * r_moon) / 2) - PANEL_MARGIN
-        if fit >= PANEL_MIN_PX:
-            if fit < args.panel:
-                print("  panel %d -> %d px so the top and bottom slots clear "
-                      "the disc" % (args.panel, fit))
-                args.panel = fit
-            corner_xy += [(ow / 2, 0.0), (ow / 2, oh)]
-        else:
-            print("  no room for top/bottom panels (%d px clear); "
-                  "using six slots" % max(fit, 0))
-    perms = {k: list(itertools.permutations(range(len(corner_xy)), k))
-             for k in range(1, 5)}
+                 (0.0, oh / 2), (ow, oh / 2), (ow / 2, 0.0), (ow / 2, oh)]
+
+    # Panel rectangles in HALF-RES px, matching draw_insets, which works in fine
+    # px with the same margin - hence the halving of both.
+    _p, _m = args.panel / 2.0, PANEL_MARGIN / 2.0
+    _rects = [(_m, _m), (_m, oh - _p - _m),
+              (ow - _p - _m, _m), (ow - _p - _m, oh - _p - _m),
+              (_m, (oh - _p) / 2), (ow - _p - _m, (oh - _p) / 2),
+              ((ow - _p) / 2, _m), ((ow - _p) / 2, oh - _p - _m)]
+    slot_clear = []
+    for (_x, _y) in _rects:
+        # Nearest point of the rectangle to the disc centre.
+        _nx = min(max(ow / 2.0, _x), _x + _p)
+        _ny = min(max(oh / 2.0, _y), _y + _p)
+        slot_clear.append(math.hypot(_nx - ow / 2.0, _ny - oh / 2.0) - r_moon)
+    _need = MIN_CLEAR_R * r_moon
+    slots = [i for i in range(8) if slot_clear[i] >= _need]
+    if len(slots) < 4:
+        # Never leave a feature without a slot: a cramped panel beats no panel.
+        slots = sorted(range(8), key=lambda i: -slot_clear[i])[:4]
+        print("  frame is too tight for a %.0f px gap; using the four roomiest "
+              "slots" % _need)
+    print("  %d of 8 slots clear the disc by %.0f px: %s"
+          % (len(slots), _need, ", ".join(SLOT_NAMES[i] for i in slots)))
 
     """
     A leader must not be routed across the Moon.
@@ -959,9 +995,6 @@ def main():
         d = math.hypot(fx - corner[0], fy - corner[1])
         return d + (CROSS_PENALTY if over_disc(fx, fy, corner[0], corner[1], r)
                     else 0.0)
-    cur_perm = None
-    pend, pend_n = None, 0
-    prev_ident = None
 
     """
     The cusps are named by where they are in the picture, not by which leads.
@@ -1270,30 +1303,34 @@ def main():
         groups[key].append((f, feats))
 
     """
-    A panel NEVER changes corner unless its own subject is new.
+    A layout belongs to a CLIP, and carries into the next one.
 
-    Optimising each clip on its own kept trading panels around, and weighting
-    continuity was not enough either, because the trades were not caused by
-    near-ties in the first place. What actually moved them was a feature LEAVING:
-    when the sunspot goes behind the Moon partway through 14_01_54 it frees the
-    upper-left corner, the unconstrained optimum then pulls everyone else into it,
-    and two panels jump mid-clip. The same happens in reverse when a feature comes
-    back. Nothing about the remaining features changed - only the vacancy.
+    The assignment used to be re-chosen per frame on a 9-frame hold, which
+    switched panels mid-capture: the first two runs are only 28 and 34 frames and
+    are eight and a half MINUTES apart, so the geometry jumps between them and the
+    best assignment jumps with it. It is now decided once from each clip's MEDIAN
+    feature positions, so it can only change where a change is already expected
+    and hidden - at a capture boundary, under the dissolve. Keyed on the label
+    list as well as the file, so a capture that loses a feature partway (the
+    sunspot going behind the Moon inside 14_01_54) gets a fresh layout for the
+    frames after it rather than one built around a feature that is no longer
+    there.
 
-    So corners are INHERITED. Each feature takes the corner of the nearest feature
-    of the same name in the previous clip; only features with no predecessor get
-    placed, into whatever corners are still free, by shortest leader. Inheriting by
-    nearest position rather than by rank matters for the prominences, which are
-    re-detected and re-ranked at every exposure level - by rank, slot 2 of one
-    level is a different prominence from slot 2 of the next and the panels would
-    shuffle even though the picture had barely changed.
+    That still re-decided every clip from scratch, and a clip boundary is only
+    hidden if little actually moves across it. So the previous clip's assignment
+    is carried in and preferred, priced by CONTINUITY_PX in the search below.
+    Preferred and not enforced: an earlier version made inheritance a hard rule
+    and that is what put the panels out of order and crossed their leaders. The
+    memory is not cleared at the totality boundary either - it does not need to
+    be, since a feature can only inherit from one of its own name and totality's
+    cast has no counterpart in the partial phases.
 
-    The memory is cleared when the STATE changes, because totality has an entirely
-    different cast (four prominences against a sunspot, a limb and two cusps) and
-    the partial phases either side of it are separated by the largest gap in the
-    video. Re-deciding there is expected, and hidden by it.
+    Result on this video: 8 arrangements over 2393 frames, a median stable
+    stretch of 8.3 s, and 3 panel moves - all three of them forced.
     """
     layout = {}
+    prev = []                 # (x, y, label, slot) from the previous clip
+    n_moved = 0
     for key in order:
         rows = groups[key]
         n = len(rows[0][1])
@@ -1305,35 +1342,58 @@ def main():
             med.append((xs[len(xs)//2], ys[len(ys)//2]))
 
         """
-        Assign by ANGLE around the disc, not by nearest free slot.
+        Score every assignment; five terms, four of them corrections to length.
 
-        Two things were wrong with nearest-free-slot plus inheritance. It packed:
-        four prominences on the left of the disc took the three left slots and
-        stacked their panels down one edge while the rest of the frame sat empty.
-        And it tangled: a slot held while its subject moved stopped matching that
-        subject's position, so 294 frames - 12% of the video - had leaders
-        crossing each other, which a swap pass then had to repair. Repairing a
-        symptom is not the same as removing the cause.
+          length    - how far each panel reaches to its subject;
+          crossing  - a flat charge per pair of leaders that cross, and per
+                      leader routed over the disc;
+          spread    - a reward for the tightest angular gap between the chosen
+                      slots, because length alone bunches: the shortest leaders
+                      are the ones that never leave the crowded side, so four
+                      prominences on the left of the disc took the three left
+                      slots and stacked their panels down one edge;
+          clearance - a reward for roomy slots, which is what favours the corners
+                      and stops spread from choosing top/bottom/left/right (90
+                      degrees apart, against 74/106 for the corners) and putting
+                      panels where the frame is tightest;
+          continuity- a charge for moving a panel out of the slot it holds.
 
-        The features and the slots are both rings about the same centre: the
-        features on the limb, the slots around the frame. Walk both rings in the
-        same direction and match them in order, and no two leaders can cross -
-        by construction, with nothing to untangle afterwards. That leaves only
-        WHICH slots to use, and picking the most evenly spread subset is what
-        pushes the panels out around the whole frame instead of bunching them
-        where the subjects happen to be.
+        An earlier version restricted the candidates to cyclic ones - features
+        ordered by angle about the disc, slots by angle about the frame, matched
+        in the same rotational order - on the grounds that such a matching cannot
+        cross. THAT IS NOT TRUE, and this data contains the counterexample: in
+        14_14_36 four prominences at -159, -73, +119 and +162 degrees, all on the
+        limb, take upper-right, lower-right, lower-left and upper-left. The slot
+        angles are a rotation of their sorted order, so the matching is cyclic,
+        and two leaders cross anyway - every one of them sweeps more than a
+        quarter turn about the centre and they sweep by different amounts. Order
+        preservation only forbids crossings for segments that do not wind around
+        the centre. It held on the previous cut by luck.
 
-        Cost is total leader length, less a reward for the tightest angular gap
-        between the chosen slots. Length alone always bunches - the shortest
-        leaders are the ones that never leave the crowded side.
+        So crossings are counted and priced rather than assumed away, on the clip
+        MEDIAN positions, and every injective assignment is considered - 360 of
+        them for four features in six slots, which costs nothing. Priced and not
+        forbidden because with four features on one limb and slots outside it
+        there is not always a clean arrangement, and a crossed leader still beats
+        no leader.
         """
         cx0, cy0 = ow/2.0, oh/2.0
-        f_ang = [math.atan2(p[1] - cy0, p[0] - cx0) for p in med]
-        f_ord = sorted(range(n), key=lambda i: f_ang[i])
+
+        # The slot each feature would rather keep: the one held by the nearest
+        # feature of the same name in the previous clip. Nearest POSITION and not
+        # rank, because the prominences are re-detected and re-ranked at every
+        # exposure level - by rank, slot 2 of one level is a different prominence
+        # from slot 2 of the next and the panels would shuffle for nothing.
+        want = [None]*n
+        for i in range(n):
+            same = [p for p in prev if p[2] == labels[i]]
+            if same:
+                want[i] = min(same, key=lambda p: math.hypot(med[i][0] - p[0],
+                                                             med[i][1] - p[1]))[3]
 
         # Slot centres, ordered around the frame the same way.
         s_ang = [math.atan2(c[1] - cy0, c[0] - cx0) for c in corner_xy]
-        s_ord = sorted(range(len(corner_xy)), key=lambda c: s_ang[c])
+        s_ord = sorted(slots, key=lambda c: s_ang[c])
 
         def gap_score(chosen):
             """Smallest angular gap between the chosen slots, in radians."""
@@ -1345,28 +1405,32 @@ def main():
             return min(gaps)
 
         best, best_cost = None, float("inf")
-        for combo in itertools.combinations(range(len(s_ord)), n):
-            ring = [s_ord[c] for c in combo]          # already in cyclic order
-            for rot in range(n):
-                cand = [None]*n
-                ok = True
-                total = 0.0
-                for j, fi in enumerate(f_ord):
-                    slot = ring[(j + rot) % n]
-                    cand[fi] = slot
-                    total += leader_cost(med[fi][0], med[fi][1],
-                                         corner_xy[slot], r_moon)
-                    if total >= best_cost + SPREAD_WEIGHT*math.pi:
-                        ok = False
-                        break
-                if not ok:
-                    continue
-                cost = total - SPREAD_WEIGHT*gap_score(ring)
-                if cost < best_cost:
-                    best, best_cost = cand, cost
+        for cand in itertools.permutations(s_ord, min(n, len(s_ord))):
+            total = 0.0
+            for i in range(n):
+                slot = cand[i]
+                total += leader_cost(med[i][0], med[i][1],
+                                     corner_xy[slot], r_moon)
+                total -= CLEAR_WEIGHT*slot_clear[slot]
+                if want[i] is not None and want[i] != slot:
+                    total += CONTINUITY_PX
+            for a in range(n):
+                for b in range(a + 1, n):
+                    if leaders_cross(med[a], corner_xy[cand[a]],
+                                     med[b], corner_xy[cand[b]]):
+                        total += CROSS_PENALTY
+            cost = total - SPREAD_WEIGHT*gap_score(cand)
+            if cost < best_cost:
+                best, best_cost = list(cand), cost
         assigned = best
 
+        for i in range(n):
+            if want[i] is not None and want[i] != assigned[i]:
+                n_moved += 1
+        prev = [(med[i][0], med[i][1], labels[i], assigned[i]) for i in range(n)]
         layout[key] = tuple(assigned)
+
+    print("  %d clip layout(s); %d panel(s) changed slot" % (len(layout), n_moved))
 
     for f, feats in per_frame:
         if not feats:

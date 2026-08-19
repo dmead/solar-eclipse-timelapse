@@ -78,17 +78,23 @@ DEFAULTS = {
         # a 1680 px tall frame.
         "size_frac": 0.25,
         "zoom": 4.0,
-        # Use the top and bottom edges as well as the corners and sides.
-        #
-        # The panel is shrunk to whatever clears the disc when this is on. The
-        # disc is 1168 px across in an 1800 px frame, so there are 616 px free at
-        # the sides and only 316 above and below: a 420 px panel fits beside the
-        # disc and not over it. Eight slots at 292 px against six at 420 - the
-        # whole perimeter usable, at 70% of the panel area.
-        #
-        # Turn it off to keep the larger panels and accept that features
-        # clustered on one side of the Sun put their panels down one edge.
-        "use_top_bottom": True,
+        # Smallest gap between a panel and the disc edge, in radii. A slot that
+        # cannot make this gap is not offered at all, which is how the top and
+        # bottom slots come and go: in a 4:3 window with the disc at 2.2 R there
+        # is 616 px clear at the sides and 316 above, so a 420 px panel stands
+        # off the sides and would sit ON the limb top and bottom. A wider frame,
+        # or a smaller disc in it, gets all eight.
+        "min_clear_r": 0.15,
+        # Leader length, in px, worth paying per px of extra clearance. This is
+        # what "favour the corners" means numerically - a corner is simply the
+        # roomiest slot in any rectangular frame, so preferring room prefers
+        # corners without naming them, and still does the right thing on a frame
+        # shape where that stops being true.
+        "clear_weight": 2.0,
+        # Leader length, in px, worth paying to leave a panel where it already
+        # is. Panels moving mid-video reads as chaos however good each individual
+        # arrangement is, so this is deliberately far larger than any leader.
+        "continuity_px": 2000.0,
         "expose": True,
         "expose_pct": 99.5,
         "expose_target": 0.85,
@@ -157,7 +163,9 @@ _COMMENTS = {
     "render.max_group_shift_r": "largest believable intra-group shift, in radii",
     "render.engine": "'ported' or 'skimage' phase correlator",
     "panels.size_frac": "panel edge as a fraction of the output short side",
-    "panels.use_top_bottom": "use the top/bottom edges too, shrinking the panel to clear the disc",
+    "panels.min_clear_r": "smallest panel-to-disc gap, in radii; slots tighter than this are dropped",
+    "panels.clear_weight": "leader px paid per px of extra clearance - the corner preference",
+    "panels.continuity_px": "leader px paid to keep a panel in the slot it already holds",
     "panels.cusp_half_r": "[min, max] cusp box half-width, in radii",
     "panels.bead_half_r": "[min, max] bead box half-width, in radii",
     "panels.prom_sep_r": "minimum separation between prominence picks, in radii",
