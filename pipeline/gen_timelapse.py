@@ -34,6 +34,8 @@ import argparse
 import json
 import os
 
+import numpy as np
+
 FULL_SCALE = 65535.0
 
 # Rendered brightness the anchor segment's p99 is mapped to, per state. The
@@ -77,6 +79,7 @@ MAX_SATFRAC = {"filtered": 0.01, "unfiltered": 0.02}
 def tune(out_dir, log=None):
     """Resolve selection and dwell settings from the config."""
     global TARGET, MAX_SATFRAC, TRANSITION_CEILING, STACK_MAX
+    global FLATTEN_MIN_AREA, FLATTEN_SAT, FLATTEN_MAX
     global SLOWMO_LEVEL_S, RESOLVE_S, BEADS_S, CORONA_S
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -91,6 +94,9 @@ def tune(out_dir, log=None):
                             MAX_SATFRAC["unfiltered"])}
     TRANSITION_CEILING = P.get("select.transition_ceiling", TRANSITION_CEILING)
     STACK_MAX = P.get("select.stack_max", STACK_MAX)
+    FLATTEN_MIN_AREA = P.area("select.min_crescent_r2", FLATTEN_MIN_AREA)
+    FLATTEN_SAT = P.get("select.crescent_sat", FLATTEN_SAT)
+    FLATTEN_MAX = P.get("select.flatten_max", FLATTEN_MAX)
     SLOWMO_LEVEL_S = P.get("dwell.prominence_s", SLOWMO_LEVEL_S)
     RESOLVE_S = P.get("dwell.resolve_s", RESOLVE_S)
     BEADS_S = P.get("dwell.beads_s", BEADS_S)
@@ -109,6 +115,110 @@ def median(xs):
 def level(point):
     """Background level above the black floor, for one sample."""
     return max(point["med"] - point["black"], 1.0)
+
+
+# Crescent smaller than this, in px, and the measurement cannot be separated from
+# sky well enough to normalize on. Near second and third contact.
+FLATTEN_MIN_AREA = 2000
+# Above this the crescent is clipped in the raw data, so its level says nothing
+# about the exposure. Three captures are entirely in this state.
+FLATTEN_SAT = 0.97
+# Never rescale a frame by more than this. A correction this large means the
+# measurement is wrong, not the gain.
+FLATTEN_MAX = 2.0
+
+
+def crescent_level(plane):
+    """Median level of the lit crescent, and its area in px.
+
+    Thresholded halfway between the sky and the peak rather than at a fixed
+    percentile, so it follows the crescent down as the Moon covers it. A
+    percentile threshold stops being the photosphere once the crescent is thinner
+    than the percentile itself and silently becomes a sky measurement.
+    """
+    sky = float(np.median(plane))
+    peak = float(np.percentile(plane, 99.99))
+    if peak <= sky * 1.5:
+        return 0.0, 0
+    m = plane > sky + 0.5 * (peak - sky)
+    n = int(m.sum())
+    return (float(np.median(plane[m])) if n else 0.0), n
+
+
+def flatten_captures(frames, log=print):
+    """Hold the rendered photosphere level constant within each capture.
+
+    The target is the rendered level - level times gain - and not the raw level.
+    Aiming at the raw level would undo the segment gain wherever a capture
+    genuinely contains an exposure change: 14_06_45 has one, and correcting the
+    raw level there turned a +13.6% step into -39.2% by cancelling the gain that
+    was handling it correctly.
+
+    Where the crescent cannot be measured the correction is HELD from the nearest
+    frame that could be, never reset to 1. Resetting would put a seam exactly
+    where measurable meets unmeasurable, which is the thing this exists to remove.
+    """
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from ecl.source import open_source
+
+    want = [f for f in frames if f["state"] == "filtered"
+            and not f.get("resolve") and not f.get("bead")]
+    if not want:
+        return
+
+    # Dense and hold frames repeat raw frames, so measure each one once.
+    uniq = sorted({(f["src"], f["index"]) for f in want})
+    log("  measuring the crescent on %d raw frame(s) for %d video frame(s)"
+        % (len(uniq), len(want)))
+    meas, src, cur = {}, None, None
+    try:
+        for path, idx in uniq:
+            if path != cur:
+                if src is not None:
+                    src.close()
+                src = open_source(path)
+                cur = path
+            meas[(path, idx)] = crescent_level(src.green(idx).astype(np.float32))
+    finally:
+        if src is not None:
+            src.close()
+
+    by = {}
+    for f in want:
+        by.setdefault(f["file"], []).append(f)
+
+    n_fixed = 0
+    for name in sorted(by, key=lambda k: frames.index(by[k][0])):
+        v = by[name]
+        lvl, ok = [], []
+        for f in v:
+            phot, area = meas[(f["src"], f["index"])]
+            lvl.append(phot * f["gain"])
+            ok.append(area >= FLATTEN_MIN_AREA and phot < FLATTEN_SAT and phot > 0)
+        if sum(ok) < 3:
+            log("  %-14s no measurable crescent - left alone" % name)
+            continue
+        good = [lvl[i] for i in range(len(v)) if ok[i]]
+        target = median(good)
+        corr = [1.0] * len(v)
+        for i in range(len(v)):
+            if ok[i] and lvl[i] > 0:
+                corr[i] = min(max(target / lvl[i], 1.0 / FLATTEN_MAX), FLATTEN_MAX)
+        # Carry the nearest measured correction across the unmeasurable frames.
+        idx_ok = [i for i in range(len(v)) if ok[i]]
+        for i in range(len(v)):
+            if not ok[i]:
+                corr[i] = corr[min(idx_ok, key=lambda j: abs(j - i))]
+        before = max(lvl) / max(min(lvl), 1e-9) - 1.0
+        after = (max(l * c for l, c in zip(lvl, corr))
+                 / max(min(l * c for l, c in zip(lvl, corr)), 1e-9) - 1.0)
+        for f, c in zip(v, corr):
+            f["gain"] = round(f["gain"] * c, 8)
+        n_fixed += 1
+        log("  %-14s spread %5.1f%% -> %4.1f%%   (%d of %d measurable)"
+            % (name, 100 * before, 100 * after, sum(ok), len(v)))
+    log("  flattened %d capture(s)" % n_fixed)
 
 
 def main():
@@ -551,6 +661,15 @@ def main():
         print("  %-11s %s f%d-%d -> %d frames (%.1fs) from %d raw (%.1fx)"
               % (name, g[0]["file"], g[0]["index"], g[-1]["index"], len(g),
                  len(g) / args.fps, uniq, len(g) / max(uniq, 1)))
+    """
+    Flatten each capture before the gains are written out.
+
+    Late on purpose: it needs the final frame list, because it corrects the
+    frames that will actually be rendered rather than the segments they came
+    from. See flatten_captures.
+    """
+    flatten_captures(frames)
+
     for f in frames:
         del f["satfrac"]
 
