@@ -105,7 +105,6 @@ DEFAULTS = {
         "prom_r_inner": 0.90,
         "prom_r_outer": 1.25,
         "prom_min_snr": 8.0,
-        "prom_level_min": 8,
         "spot_max_r": 0.90,
         "spot_ring_r": 0.072,
         "moon_fit_max_rms_r": 0.043,

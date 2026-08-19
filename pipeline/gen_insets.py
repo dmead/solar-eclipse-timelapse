@@ -90,9 +90,18 @@ PROM_MIN_SEP_PX = 90.0
 # put a box around nothing.
 PROM_MIN_SNR = 8.0
 
-# Video frames a totality exposure level needs before prominences are detected on
-# it rather than borrowed. Below this it is a point on the operator's ramp.
-PROM_LEVEL_MIN = 8
+# Prominences are detected once per CAPTURE, on the level with the most video
+# frames behind it. Per-LEVEL detection was the cause of the worst single jump in
+# the video: the search returns its answers ranked by strength, so when a brighter
+# exposure revealed a fainter prominence it displaced a weaker one from the list
+# and the panel pointing at that rank moved 561 px - right limb to left limb - in
+# one frame, inside a single clip.
+#
+# An earlier threshold (detect only on levels of >= 8 frames, borrow otherwise)
+# was aimed at the same fault and missed it, because the level that caused it has
+# 119 frames. Frame count was never the right axis: the levels of one capture are
+# exposure brackets of the same two seconds, the prominences do not move between
+# them, and so there is nothing to re-detect.
 
 # Terminator fits worse than this are not the Moon's limb and are discarded.
 MOON_FIT_MAX_RMS = 12.0
@@ -107,7 +116,7 @@ def tune(out_dir, log=None):
     disc happened to be 279 px across.
     """
     global PROM_MIN_SEP_PX, PROM_R_INNER, PROM_R_OUTER, PROM_MIN_SNR
-    global PROM_LEVEL_MIN, SPOT_MAX_R, MIN_RING_PX, MOON_FIT_MAX_RMS
+    global SPOT_MAX_R, MIN_RING_PX, MOON_FIT_MAX_RMS
     global CUSP_HALF_MIN, CUSP_HALF_MAX, BEAD_HALF_MIN, BEAD_HALF_MAX
     global BEAD_MIN_AREA, BEAD_MAX_THICK, BEAD_ARC_MAX, BEAD_ARC_MIN
     global BEAD_R_INNER, BEAD_R_OUTER, BEAD_SAT, BEAD_NEAR_FRAMES, BEAD_RUN_GAP
@@ -120,7 +129,6 @@ def tune(out_dir, log=None):
     PROM_R_INNER = P.get("panels.prom_r_inner", PROM_R_INNER)
     PROM_R_OUTER = P.get("panels.prom_r_outer", PROM_R_OUTER)
     PROM_MIN_SNR = P.get("panels.prom_min_snr", PROM_MIN_SNR)
-    PROM_LEVEL_MIN = P.get("panels.prom_level_min", PROM_LEVEL_MIN)
     SPOT_MAX_R = P.get("panels.spot_max_r", SPOT_MAX_R)
     MIN_RING_PX = max(4, int(P.px("panels.spot_ring_r")))
     MOON_FIT_MAX_RMS = P.px("panels.moon_fit_max_rms_r")
@@ -826,20 +834,32 @@ def main():
     is how a panel came to sit on blank inner corona while an obvious prominence
     a quarter turn away had no box on it at all.
 
-    A level is one constant-exposure run, keyed the same way the detector's
-    level-bias correction keys it: file plus gain. Each is measured on its own
-    middle frame, which costs one extra frame read per level.
+    But the unit is the CAPTURE, not the exposure level.
 
-    A level has to be long enough to BE a level, though.
+    Detecting per level - file plus gain, keyed the way the detector's level-bias
+    correction keys it - was tried and produced the worst single jump in the
+    video. The search returns its answers ranked by strength and keeps four, so
+    when the exposure changed and a fainter prominence became detectable it
+    displaced a weaker one from the list, and the panel pointing at that rank
+    moved 561 px across the disc between two consecutive frames.
 
-    Keying on gain splits a run wherever the exposure changed, which is right when
-    the operator settled somewhere and wrong while they were still moving. The
-    start of 14_14_36 is five "levels" of 4, 2, 1, 1 and 1 frames inside ten video
-    frames - a ramp, not five exposures - and each one got its own detection, its
-    own four prominences and its own ranking. The panels moved 380 to 560 px
-    between consecutive frames there. A level under PROM_LEVEL_MIN borrows the
-    detection from the nearest level in the same capture that clears the bar, so a
-    ramp shows the prominences of the exposure it is heading for.
+    A threshold on level length was an earlier attempt at the same fault and did
+    not survive contact with it: the start of 14_14_36 is five "levels" of 4, 2,
+    1, 1 and 1 frames inside ten video frames - a ramp, not five exposures - and
+    requiring 8 frames fixed those, while the level that caused the 561 px jump
+    has 119. Frame count was never the right axis.
+
+    A capture is about two seconds. Its levels are exposure brackets of one
+    moment, the prominences do not move between them, and re-detecting can only
+    introduce disagreement. So each capture is detected ONCE, on the level with
+    the most video frames behind it - the exposure the viewer actually spends the
+    capture looking at, and the one least likely to be a transient point on the
+    operator's ramp.
+
+    This does mean a capture shows the prominences of its dominant exposure even
+    in its short bracketing frames. That is the intended trade: a box on a
+    prominence that is dim for a few frames is far less noticeable than a box that
+    moves to a different prominence and back.
 
     Resolve frames are left out entirely: they show no prominence panels, so
     detecting on them is 82 frame reads for results nothing consumes.
@@ -851,30 +871,28 @@ def main():
         levels.setdefault((f["file"], round(f["gain"], 4)), []).append(f)
 
     order_l = sorted(levels, key=lambda k: levels[k][0]["utc"])
-    solid = [k for k in order_l if len(levels[k]) >= PROM_LEVEL_MIN] or order_l
-    pang, borrow = {}, {}
+    by_file = {}
     for key in order_l:
-        if key in solid:
-            continue
-        # Nearest solid level in time, preferring the same capture.
-        t = levels[key][0]["utc"]
-        same = [k for k in solid if k[0] == key[0]] or solid
-        borrow[key] = min(same, key=lambda k: abs(levels[k][0]["utc"] - t))
+        by_file.setdefault(key[0], []).append(key)
 
-    for key in solid:
-        fs = levels[key]
+    pang = {}
+    for fn in sorted(by_file, key=lambda f: levels[by_file[f][0]][0]["utc"]):
+        keys = by_file[fn]
+        # The level the viewer spends most of the capture looking at. It is also
+        # the one most likely to be exposed for the corona rather than a point on
+        # the operator's ramp, since the ramp frames are transient by definition.
+        best = max(keys, key=lambda k: len(levels[k]))
+        fs = levels[best]
         mid = fs[len(fs)//2]
         mx, my = moon_of(mid)
-        pang[key] = find_prominences(args.data, mid, mx, my, r_moon, 4)
-        print("  level %-14s gain %-9s %3d frm -> %d prominence(s)  %s"
-              % (key[0], key[1], len(fs), len(pang[key]),
+        pang[fn] = find_prominences(args.data, mid, mx, my, r_moon, 4)
+        print("  %-14s %d level(s), detect on gain %-9s (%d of %d frm) -> %d "
+              "prominence(s)  %s"
+              % (fn, len(keys), best[1], len(fs),
+                 sum(len(levels[k]) for k in keys), len(pang[fn]),
                  ", ".join("%+.0f%+.0f r=%.2f snr=%.0f"
                            % (p[0], p[1], math.hypot(p[0], p[1])/r_moon, p[2])
-                           for p in pang[key])))
-    for key, src in sorted(borrow.items(), key=lambda kv: levels[kv[0]][0]["utc"]):
-        pang[key] = pang[src]
-        print("  level %-14s gain %-9s %3d frm -> borrows gain %s (too short to "
-              "detect on)" % (key[0], key[1], len(levels[key]), src[1]))
+                           for p in pang[fn])))
 
     """
     Send each feature to a nearby slot, not to a fixed one.
@@ -1237,7 +1255,7 @@ def main():
             # do. The bead panel is exempt because it is pointed at the glare
             # deliberately.
             if not f.get("resolve"):
-                for dxp, dyp, _snr in pang.get((f["file"], round(f["gain"], 4)), []):
+                for dxp, dyp, _snr in pang.get(f["file"], []):
                     feats.append((mx + dxp, my + dyp, "prominence", args.zoom))
         else:
             spot = (f["cx"] + ox, f["cy"] + oy)
