@@ -103,6 +103,15 @@ DEFAULTS = {
         "expose": True,
         "expose_pct": 99.5,
         "expose_target": 0.85,
+        # How far a panel is exposed toward its own subject, 0 to 1, in log
+        # space. 1.0 exposes fully and renders the corona inside a panel far
+        # darker than the same corona outside it; 0.0 keeps the frame's exposure
+        # and blows the subject out.
+        "expose_strength": 0.55,
+        # Hide the part of a leader that crosses the Moon. Off: the Moon is dark,
+        # nothing is lost behind the line, and the lunar-limb leader is almost
+        # entirely inside the disc - occluded, it points at nothing.
+        "occlude_leaders": False,
         # Feature box half-widths, in radii (was 40-46 and 45-80 px at r=279).
         "cusp_half_r": [0.143, 0.165],
         "bead_half_r": [0.161, 0.287],
@@ -181,6 +190,8 @@ _COMMENTS = {
     "select.flatten_max": "largest within-capture brightness correction allowed",
     "panels.size_frac": "panel edge as a fraction of the output short side",
     "panels.min_clear_r": "smallest panel-to-disc gap, in radii; slots tighter than this are dropped",
+    "panels.expose_strength": "0 = frame exposure, 1 = fully exposed for the panel subject",
+    "panels.occlude_leaders": "hide the span of a leader that crosses the Moon",
     "panels.clear_weight": "leader px paid per px of extra clearance - the corner preference",
     "panels.continuity_px": "leader px paid to keep a panel in the slot it already holds",
     "panels.cusp_half_r": "[min, max] cusp box half-width, in radii",
