@@ -1043,10 +1043,11 @@ simpler.
 
 **The features and the slots are both rings about the same centre**: the features
 on the limb, the slots around the frame. Sort each by angle, walk both in the same
-direction, match in order. No two leaders can cross — by construction, with
-nothing to untangle and no memory to keep, so the mid-clip shuffle inheritance was
-guarding against cannot arise either. The clip-median positions from the section
-above still feed it.
+direction, match in order.
+
+I claimed that cannot cross. **It can, and this data contains the counterexample**
+— see the section below. What the cyclic match actually bought was a cheap way to
+avoid most crossings, which held on this cut by luck rather than by construction.
 
 That leaves only WHICH slots, and this is where the packing was hiding. Minimising
 total leader length always bunches, because the shortest leaders are the ones that
@@ -1075,7 +1076,7 @@ sized from the disc radius at layout time, so a data set whose disc leaves no ro
 falls back to six on its own. `panels.use_top_bottom = false` keeps the larger
 panels deliberately.
 
-Measured on the delivered config (2393 frames, 2400x1800, panel 292 px):
+Measured on that config (2393 frames, 2400x1800, panel 292 px):
 
 ```
 crossing leaders      : 294 -> 0 frames
@@ -1084,8 +1085,88 @@ slot usage            : bottom 1766, top 1657, right 900, left 872,
                         UL 808, LL 720, UR 466, LR 378
 ```
 
-All eight in use, and the two that did not exist before are the two busiest —
-which is the measurement that says the old frame really was three-quarters unused.
+**And that is the cut that got sent back**, for three faults the numbers above do
+not show. See the next section.
+
+## Corners, clearance and memory (2026-08-19)
+
+Rewarding even angular spacing and nothing else went wrong in three ways at once,
+and the measurements that looked good were measuring the wrong things.
+
+**The top and bottom panels touched the Sun.** Not nearly — exactly. The
+shrink-to-fit rule took the free space above the disc and subtracted the margin,
+which puts the panel edge on the limb by construction:
+
+```
+slot        gap to disc
+corners        238 px
+left/right     150 px
+top/bottom       0 px      <- and these were the two most used
+```
+
+**Spacing prefers the tightest slots.** Four slots at top, bottom, left and right
+are 90° apart; four corners are 74°/106°. So the arrangement that scores best on
+spread is exactly the one that puts panels where the frame has least room, and 69%
+of panels ended up outside a corner.
+
+**Nothing carried a layout forward.** Every clip re-decided from scratch, so a
+boundary could move every panel at once. Only 8 arrangements over the video, which
+is why this did not show up in a count — it is not how OFTEN they change but how
+MUCH changes each time.
+
+Three rules, in the order they matter:
+
+1. **Clearance is a hard rule, not a fitted panel size.** Each slot is turned into
+   the rectangle the renderer will draw, its gap to the limb is measured, and
+   anything under `panels.min_clear_r` (0.15 R) is not offered. Top and bottom
+   drop out of a 4:3 frame; a wider frame or a smaller disc keeps them. The panel
+   goes back to its configured 420 px — 2.1× the area of the 292 px it had been
+   shrunk to.
+2. **Clearance is also the corner preference.** `panels.clear_weight` pays leader
+   length per px of clearance, so the roomiest slot wins. Corners are not named
+   anywhere: in a rectangular frame they are simply the roomiest, and preferring
+   room keeps doing something sensible on a frame shape where that stops holding.
+3. **`panels.continuity_px` charges for moving a panel.** This is inheritance
+   again — removed earlier because holding a slot while its subject moved crossed
+   the leaders, and safe now only because crossings are priced directly.
+
+### The cyclic-order claim was wrong
+
+Matching two rings in cyclic order is **not** crossing-free in general. Clip
+`14_14_36` is the counterexample: four prominences at −159°, −73°, +119° and
++162°, all on the limb at r = 285, assigned UR / LR / LL / UL. The slot angles are
+a rotation of their own sorted order, so the matching is cyclic — and two leaders
+cross anyway, because each sweeps more than a quarter turn about the centre and
+they sweep by different amounts. Order preservation only forbids crossings for
+segments that do not wind around the centre.
+
+That layout scored 0 crossings on the delivered cut purely because the search
+happened to pick a different rotation. Adding the clearance and continuity terms
+changed the pick and **138 frames crossed** — a latent fault, not a new one.
+
+So the restriction to cyclic candidates is gone. Every injective assignment is
+scored — 360 of them for four features in six slots, which costs nothing — and
+crossings are counted on the clip medians and priced like any other term. **14 of
+the 26 clip layouts are now non-cyclic**, so the restriction had been excluding
+the best crossing-free answers as well as admitting bad ones.
+
+### Measured
+
+```
+                        before    after
+crossing leaders             0        0     (before was luck; see above)
+worst panel-disc gap      0 px    86 px     = 0.29 R
+panels in a corner         31%      95%
+panel size               292 px   420 px    2.1x the area
+arrangement changes          8        6
+median stable stretch    8.3 s   11.4 s
+panels that move            10        4
+leader length p90        565 px  946 px     <- the cost of corners
+```
+
+The leaders get longer, and that is the trade the corners buy: a corner is the
+furthest point in the frame from a feature on the limb. They pass behind the disc
+rather than over it, so the extra length is drawn on corona, not on the Moon.
 
 ## Caution: the validation tooling has been wrong TWICE — now three times
 
