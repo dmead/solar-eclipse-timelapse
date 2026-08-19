@@ -1368,6 +1368,118 @@ so there is nothing better to measure against.
 **Corona tone mapping.** Starlet multiscale was tried and lost 26–44% of the
 baseline gradient. Not pursued.
 
+## Panels that belong to the picture (2026-08-19)
+
+Three reports, three different causes, all of them a constant set too high.
+
+### The panels were nine times darker than the frame
+
+`panel_gain` reduced LINEARLY. To bring a highlight ten times over the ceiling
+down to the target it brought the corona around it down ten times too: at seq
+1000, corona inside a panel rendered at **24 of 255** against **227** for the same
+corona just outside it. The panel stopped reading as a magnifier and started
+reading as a different photograph.
+
+The step is now taken in log space, `panels.expose_strength`. Swept on the bead
+panel and looked at:
+
+```
+strength   1.00   0.75   0.55   0.40   0.25   0.00
+median       25     43     67     95    133    226
+mean |dx|  2.29   2.56   2.72   2.88   3.07   2.63
+clipped       0      0      0      0      0      0   % over 250
+```
+
+Two things here would have been got wrong by reasoning instead of measuring.
+Local contrast **rises** as the panel brightens, because the display gamma
+expands the mid-tones — the full reduction was buying darkness and losing detail.
+And **nothing clips at any setting**: the highlight shoulder was already absorbing
+the peak, so the linear reduction was not protecting anything. 0.55 is where the
+corona reads and the chromosphere is still a crisp coloured line; by 0.25 the rim
+blooms.
+
+### Leaders stopped at the Moon and pointed at nothing
+
+The span of a leader inside the disc was skipped, so the line read as passing
+BEHIND the Moon — true to the scene, and fatal to the annotation. The lunar-limb
+panel points at a feature on the disc's own edge, so nearly all of its leader was
+inside the circle; what survived was two strokes ending in blank sky. Being
+honest about an occlusion is worth less than being readable, and the Moon is the
+one part of the frame with nothing to lose behind a hairline. Kept as
+`panels.occlude_leaders` for a subject whose disc carries detail.
+
+### A panel held a corner its subject had walked away from
+
+`CONTINUITY_PX` is a flat 2000 px paid to leave a panel where it is — right while
+its subject is near, wrong once it is not. At seq 1705 a prominence on the LEFT
+limb was served from the LOWER-RIGHT corner with a 1027 px leader, because the
+free `left` slot saved only 679 px against a 2000 px charge to move.
+
+Capped now: a panel keeps its slot unless that costs more than
+`panels.continuity_max_extra` px of extra leader.
+
+```
+cap           none    600    400    250
+leader p90     946    945    887    664
+across disc   1831   1794   1540   1222
+panels moved     6      5      3      3
+```
+
+**250 costs nothing in stability — it moves FEWER panels than no cap at all**,
+because a panel dragged out of position drags its neighbours with it.
+
+`SPREAD_WEIGHT` was doing more than stopping bunching. It rewards the tightest
+angular gap between the chosen SLOTS, which says nothing about where the subjects
+are, so it refused an edge slot standing beside its own subject whenever two
+corners were free: `left` between UL and LL scores 37 degrees against 74 for four
+corners, a 1292 px penalty at 2000. Re-swept with the cap in place, 500 is the
+turning point.
+
+```
+worst "a free slot would have saved"   680 px -> 393 px
+leader p90                             946 px -> 664 px
+panels crossing >0.3R of disc            2285 -> 1238
+left slot used                            342 -> 1530 frames
+crossing leaders                             0 -> 0
+panels that move                             6 -> 3
+```
+
+## Why a bigger frame does not fix the edge slots
+
+Asked directly, and worth recording because the answer is a hard limit rather
+than a tuning choice. A full-size top panel needs, measured out from the disc
+centre:
+
+```
+R 292 + clearance 44 + panel 210 + margin 12 = 558 half-res px
+the sensor's half-height is                    540
+```
+
+It misses by **18 px with the Sun perfectly centred**, before any drift. The disc
+is 54% of the plane's short axis, leaving 248 px above and below where a full
+panel needs 266. Growing the window does not buy room, it pads black:
+
+| outH | top panel | frames padded |
+|---|---|---|
+| 900 (now) | 102 px | 25% |
+| 1000 | 152 px | 91% |
+| 1116 | 210 px (full) | 100% |
+
+Sideways there IS room — the plane is 1920 wide against 1200 used — but widening
+makes it worse: the corners move away from the disc so every leader grows by half
+the extra width, and padding reaches 28% at 1400.
+
+Eight slots with SMALLER edge panels was tried too. A top panel must be 204 px
+against 420 to clear, and the optimizer then puts almost everything on the edges
+(bottom 2123, left 1592, top 1463) because they are nearest the limb — so most
+panels in the video become the small ones. Shorter leaders bought by shrinking
+every panel is not the trade.
+
+**What would unlock it is a smaller disc relative to the sensor** — a shorter
+focal length at capture, or more sensor rows. The code already handles that
+without changes: `min_clear_r` measures each slot and offers it when it fits, so
+a wider field would bring all eight back at full size on its own.
+
 ## Caution: the validation tooling has been wrong TWICE — now three times
 
 `pjsr/sharpness.js` reported edge contrast FALLING 5.6% with stacking, and the
