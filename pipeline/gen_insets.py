@@ -90,6 +90,32 @@ PROM_MIN_SEP_PX = 90.0
 # put a box around nothing.
 PROM_MIN_SNR = 8.0
 
+# Azimuth bins the limb is projected onto to find runs of chromosphere. 720 is
+# half a degree, comfortably finer than the arcs being measured.
+ARC_BINS = 720
+# Sigmas over the annulus background at which the limb counts as lit. The picks
+# themselves need PROM_MIN_SNR to be called prominences at all; an arc only has
+# to be chromosphere, so this is lower.
+ARC_SNR = 5.0
+# Gap in the lit run, in degrees, bridged rather than treated as an end. A bead
+# chain and a prominence footpoint both dip below threshold briefly without the
+# arc having stopped.
+ARC_GAP_DEG = 3.0
+# Below this the run is a point, not an arc, and the pick keeps the default box.
+# At seq 1200 the isolated prominence measured 5 degrees against 65 for the arc,
+# so there is a wide gap to sit in.
+ARC_MIN_DEG = 12.0
+# Margin around a measured arc, in radii.
+ARC_PAD_R = 0.06
+# Least magnification a panel may drop to while growing to hold an arc.
+#
+# Expressed as a zoom rather than a radius because that is what is being
+# protected. A 65 degree arc is 628 px of chord against a 420 px panel, so it
+# cannot be held whole at any magnification - the box grows until the panel would
+# stop magnifying and then stops, which shows as much of the arc as a panel can
+# while still being worth having.
+ARC_MIN_ZOOM = 1.5
+
 # Prominences are detected once per CAPTURE, on the level with the most video
 # frames behind it. Per-LEVEL detection was the cause of the worst single jump in
 # the video: the search returns its answers ranked by strength, so when a brighter
@@ -116,6 +142,8 @@ def tune(out_dir, log=None):
     disc happened to be 279 px across.
     """
     global PROM_MIN_SEP_PX, PROM_R_INNER, PROM_R_OUTER, PROM_MIN_SNR
+    global ARC_SNR, ARC_GAP_DEG, ARC_MIN_DEG, ARC_PAD_R, ARC_MIN_ZOOM
+    global OVERLAP_MAX
     global SPOT_MAX_R, MIN_RING_PX, MOON_FIT_MAX_RMS
     global CUSP_HALF_MIN, CUSP_HALF_MAX, BEAD_HALF_MIN, BEAD_HALF_MAX
     global BEAD_MIN_AREA, BEAD_MAX_THICK, BEAD_ARC_MAX, BEAD_ARC_MIN
@@ -130,6 +158,12 @@ def tune(out_dir, log=None):
     PROM_R_INNER = P.get("panels.prom_r_inner", PROM_R_INNER)
     PROM_R_OUTER = P.get("panels.prom_r_outer", PROM_R_OUTER)
     PROM_MIN_SNR = P.get("panels.prom_min_snr", PROM_MIN_SNR)
+    ARC_SNR = P.get("panels.arc_snr", ARC_SNR)
+    ARC_GAP_DEG = P.get("panels.arc_gap_deg", ARC_GAP_DEG)
+    ARC_MIN_DEG = P.get("panels.arc_min_deg", ARC_MIN_DEG)
+    ARC_PAD_R = P.get("panels.arc_pad_r", ARC_PAD_R)
+    ARC_MIN_ZOOM = P.get("panels.arc_min_zoom", ARC_MIN_ZOOM)
+    OVERLAP_MAX = P.get("panels.overlap_max", OVERLAP_MAX)
     SPOT_MAX_R = P.get("panels.spot_max_r", SPOT_MAX_R)
     MIN_RING_PX = max(4, int(P.px("panels.spot_ring_r")))
     MOON_FIT_MAX_RMS = P.px("panels.moon_fit_max_rms_r")
@@ -259,6 +293,54 @@ def best_sunspot(data_dir, partials, r_sun, n_try):
     return best
 
 
+# Order of preference when two panels would show the same piece of sky, most
+# specific subject first. A bead chain is a particular thing happening at a
+# particular second; a prominence arc is a region; the lunar limb is wherever the
+# limb happens to be.
+FEATURE_PRIORITY = ["baily's beads", "sunspot", "prominence",
+                    "upper cusp", "lower cusp", "lunar limb"]
+
+# Share of the SMALLER source box that may lie inside another before the two are
+# treated as the same subject. Sizing prominence panels to their arc put the
+# bead box inside one on 342 frames.
+OVERLAP_MAX = 0.35
+
+
+def drop_overlapping(feats, panel):
+    """Remove features whose source box duplicates a higher-priority one.
+
+    Measured against the smaller of the two boxes, so a large arc swallowing a
+    small bead box counts as a duplicate even though it is a small fraction of
+    the arc - which is the case that matters, because the small box is the one
+    with nothing left to show.
+    """
+    def rank(f):
+        try:
+            return FEATURE_PRIORITY.index(f[2])
+        except ValueError:
+            return len(FEATURE_PRIORITY)
+
+    order = sorted(range(len(feats)), key=lambda i: (rank(feats[i]), i))
+    kept = []
+    for i in order:
+        x, y, _label, z = feats[i]
+        hb = panel/(4.0*z)                   # plane px; see the bead box
+        drop = False
+        for j in kept:
+            X, Y, _L, Z = feats[j]
+            HB = panel/(4.0*Z)
+            ox = min(x + hb, X + HB) - max(x - hb, X - HB)
+            oy = min(y + hb, Y + HB) - max(y - hb, Y - HB)
+            if ox <= 0 or oy <= 0:
+                continue
+            if ox*oy > OVERLAP_MAX*(2*min(hb, HB))**2:
+                drop = True
+                break
+        if not drop:
+            kept.append(i)
+    return [feats[i] for i in sorted(kept)]
+
+
 def find_prominences(data_dir, frame, mx, my, r_moon, n):
     """Offsets from the Moon's centre of up to n prominences, with their strength.
 
@@ -298,6 +380,88 @@ def find_prominences(data_dir, frame, mx, my, r_moon, n):
         # Blank a neighbourhood so the next pick is a different prominence and
         # not the pixel next door.
         v[np.hypot(xx - px, yy - py) < PROM_MIN_SEP_PX] = -np.inf
+    return merge_into_arcs(g, band, out, mx, my, r_moon, med, sigma)
+
+
+def merge_into_arcs(g, band, picks, mx, my, r_moon, med, sigma):
+    """Group point picks into the chromospheric arcs they stand on.
+
+    Returns (dx, dy, snr, half) - the last being the box half-width in plane px,
+    so a panel can be sized to its subject instead of to a constant.
+
+    The annulus is projected onto AZIMUTH, taking the strongest pixel at each
+    angle, and thresholded against the same robust background the picks were made
+    against. That gives the runs of limb that carry chromosphere. A pick inside a
+    long run is not really a point: at seq 1200 two of four picks sat inside one
+    65 degree run and their panels showed different slices of the same arc.
+
+    Picks sharing a run are merged into one feature whose box is the bounding box
+    of the run, so the panel holds the whole thing including both ends. A pick
+    whose run is short keeps the default box - the measurement decides, which is
+    what makes this work on a different eclipse or focal length rather than only
+    on this one.
+    """
+    if not picks:
+        return []
+    yy, xx = np.mgrid[0:g.shape[0], 0:g.shape[1]]
+    th = np.arctan2(yy - my, xx - mx)
+    bins = ((th + math.pi)/(2*math.pi)*ARC_BINS).astype(np.int32) % ARC_BINS
+    prof = np.full(ARC_BINS, -np.inf, np.float32)
+    np.maximum.at(prof, bins[band], g[band])
+    lit = (prof - med)/sigma > ARC_SNR
+
+    # Bridge gaps narrower than ARC_GAP_DEG: a bead chain and a prominence
+    # footpoint both dip below threshold for a degree or two without the arc
+    # having ended.
+    gap = max(int(round(ARC_GAP_DEG*ARC_BINS/360.0)), 1)
+    for i in range(ARC_BINS):
+        if lit[i]:
+            continue
+        for k in range(1, gap + 1):
+            if lit[(i - k) % ARC_BINS] and lit[(i + k) % ARC_BINS]:
+                lit[i] = True
+                break
+
+    def run_of(b):
+        """(lo, hi) bin range of the lit run containing bin b, or None."""
+        if not lit[b] or lit.all():
+            return None
+        lo = hi = b
+        while lit[(lo - 1) % ARC_BINS]:
+            lo -= 1
+        while lit[(hi + 1) % ARC_BINS]:
+            hi += 1
+        # Canonical: a run straddling the wrap point is reached as (-50, 30) from
+        # one side and (670, 750) from the other. Left as-is those are two keys
+        # for one arc, and two picks on it produce two identical panels.
+        return lo % ARC_BINS, lo % ARC_BINS + (hi - lo)
+
+    groups, singles = {}, []
+    for p in picks:
+        b = int((math.atan2(p[1], p[0]) + math.pi)/(2*math.pi)*ARC_BINS) % ARC_BINS
+        r = run_of(b)
+        span = 0.0 if r is None else (r[1] - r[0] + 1)*360.0/ARC_BINS
+        if r is None or span < ARC_MIN_DEG:
+            singles.append(p)
+        else:
+            groups.setdefault(r, []).append(p)
+
+    out = [(p[0], p[1], p[2], None) for p in singles]
+    for (lo, hi), ps in groups.items():
+        # Bounding box of the arc itself, sampled along the run at the radii the
+        # annulus covers, so the box holds the chromosphere and anything standing
+        # off it.
+        angs = np.linspace(lo, hi + 1, 2*(hi - lo + 1) + 3)*2*math.pi/ARC_BINS - math.pi
+        rs = np.array([PROM_R_INNER, 1.0, PROM_R_OUTER])*r_moon
+        ax = np.outer(rs, np.cos(angs)).ravel()
+        ay = np.outer(rs, np.sin(angs)).ravel()
+        cx, cy = 0.5*(ax.min() + ax.max()), 0.5*(ay.min() + ay.max())
+        half = 0.5*max(ax.max() - ax.min(), ay.max() - ay.min()) + ARC_PAD_R*r_moon
+        # PANEL_PX is FINE px and `half` is plane px, so the zoom that
+        # relates them carries the drizzle factor - the same 4 the bead
+        # box uses. Getting this wrong halves every arc box silently.
+        half = min(half, PANEL_PX/(4.0*ARC_MIN_ZOOM))
+        out.append((float(cx), float(cy), max(p[2] for p in ps), float(half)))
     return out
 
 
@@ -918,8 +1082,10 @@ def main():
               "prominence(s)  %s"
               % (fn, len(keys), best[1], len(fs),
                  sum(len(levels[k]) for k in keys), len(pang[fn]),
-                 ", ".join("%+.0f%+.0f r=%.2f snr=%.0f"
-                           % (p[0], p[1], math.hypot(p[0], p[1])/r_moon, p[2])
+                 ", ".join("%+.0f%+.0f r=%.2f snr=%.0f%s"
+                           % (p[0], p[1], math.hypot(p[0], p[1])/r_moon, p[2],
+                              "" if p[3] is None
+                              else " ARC half=%.0f" % p[3])
                            for p in pang[fn])))
 
     """
@@ -1283,8 +1449,12 @@ def main():
             # do. The bead panel is exempt because it is pointed at the glare
             # deliberately.
             if not f.get("resolve"):
-                for dxp, dyp, _snr in pang.get(f["file"], []):
-                    feats.append((mx + dxp, my + dyp, "prominence", args.zoom))
+                for pr in pang.get(f["file"], []):
+                    dxp, dyp, half = pr[0], pr[1], pr[3]
+                    # A merged arc carries its own size; a lone prominence does
+                    # not and keeps the configured zoom.
+                    z = args.zoom if half is None else args.panel/(4.0*half)
+                    feats.append((mx + dxp, my + dyp, "prominence", z))
         else:
             spot = (f["cx"] + ox, f["cy"] + oy)
             if math.hypot(spot[0] - mx, spot[1] - my) > r_moon:
@@ -1316,6 +1486,7 @@ def main():
                 feats.append((pts[0][0], pts[0][1], "upper cusp", czoom))
                 feats.append((pts[1][0], pts[1][1], "lower cusp", czoom))
 
+        feats = drop_overlapping(feats, args.panel)
         feats = feats[:4]
         counts[len(feats)] = counts.get(len(feats), 0) + 1
         per_frame.append((f, feats))
