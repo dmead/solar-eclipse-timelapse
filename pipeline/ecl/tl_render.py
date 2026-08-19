@@ -446,16 +446,16 @@ def draw_insets(out_planes, fine, ox2, oy2, insets, panel, zoom,
     cv = _Canvas(out_planes)
     out_h2, out_w2 = cv.h, cv.w
     fh, fw = fine[0].shape
-    # Six slots, in the order gen_insets assigns them: the four corners, then the
-    # left and right edge midpoints. There is no top or bottom midpoint - the
-    # frame has only 256 px of clearance above and below the disc against a
-    # 420 px panel, so one there would cover the subject. See `corner_xy` in
-    # gen_insets.
-    cy_mid = (out_h2 - panel) // 2
+    # Up to eight slots, in the order gen_insets assigns them: the four corners,
+    # then left, right, top, bottom. The last two exist only where the panel was
+    # sized to clear the disc; gen_insets decides that and simply never emits a
+    # corner index for them otherwise. See `corner_xy` there.
+    cx_mid, cy_mid = (out_w2 - panel) // 2, (out_h2 - panel) // 2
     corners = [(M, M), (M, out_h2 - panel - M),
                (out_w2 - panel - M, M),
                (out_w2 - panel - M, out_h2 - panel - M),
-               (M, cy_mid), (out_w2 - panel - M, cy_mid)]
+               (M, cy_mid), (out_w2 - panel - M, cy_mid),
+               (cx_mid, M), (cx_mid, out_h2 - panel - M)]
 
     for k, ins in enumerate(insets[:4]):
         # Source centre: superpixel coordinates, same units as the disc track.
