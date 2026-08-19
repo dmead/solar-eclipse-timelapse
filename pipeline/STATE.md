@@ -1235,13 +1235,101 @@ irrelevant — the fault was introduced downstream of every one of them. It took
 re-rendering the same frames a second way and diffing the two to see it, and that
 comparison is the one to reach for first next time.
 
-### Still open: the segment boundary lands after the exposure change
+### The segment boundary lands after the exposure change
 
-Separately, and genuinely in the data, the raw photosphere jumps **27% at seq
-179** (index 940–952 of `14_00_16`). The operator's exposure change begins before
-the segment boundary at raw index 953, so that segment's last stack averages
-frames that are partly post-change and is then given the pre-change gain. Not yet
-addressed.
+Genuinely in the data: the raw photosphere jumps **27% at seq 179** (index 940–952
+of `14_00_16`). The camera's exposure changes at raw index 948 and the segment
+boundary sits at 953, so that segment's last group averaged eight frames at one
+level with five at +71% and was then given the pre-change gain — a +10% flash.
+
+Fixed by making the group enforce its own invariant rather than trusting the
+boundary: a raw frame whose mean level disagrees with the group's reference by
+more than `render.group_level_tol` ends the group. It dropped exactly the five
+frames measured, and `seq 178 → 179` went from +10.3% to +0.5%.
+
+The boundary itself is still five frames late. `refine_boundary` binary-searches
+for where the brightness crosses the MIDPOINT of the transition, so frames that
+have already begun changing stay in the previous segment by construction. Nothing
+downstream depends on it any more, but it is worth knowing.
+
+## The exposure proxy was the sky, not the Sun (2026-08-19)
+
+A whole-video scan for brightness steps over 4% found six, and after the resume
+ghost and the segment-tail flash were fixed, three were still real: −5.7% and
++9.4% at 12.83/12.90 s, and −12.1% at 13.27 s. All three inside one capture.
+
+`level()`, the exposure proxy behind every segment gain, is the **sky background**
+— compared only across boundaries, because background also falls as the eclipse
+deepens for reasons that have nothing to do with the camera, and chained from
+segment to segment from an anchor. Chaining accumulates whatever error each
+comparison carries. Across the four boundaries of `14_00_16` it accumulates
+**15.5%**, which is why the level after that boundary sat 8% high even once the
+stacking was fixed.
+
+That scheme is not replaced. It is corrected where the correction is unarguable:
+**every residual step was inside a capture, and a capture is about two seconds.**
+The Sun's photosphere does not change brightness in two seconds, so anything that
+moves within one is the camera or the sky, and flattening it is a correction
+rather than a falsification. Between captures nothing changes — the chained gains
+still set each capture's level, and the cross-dissolve still hides the
+minute-long gaps.
+
+### Two things this got wrong first
+
+**Aim at the rendered level, not the raw level.** Correcting the raw photosphere
+to a constant cancels the segment gain wherever a capture genuinely contains an
+exposure change. `14_06_45` has one, and the first attempt turned its +13.6% step
+into **−39.2%** by undoing the gain that was handling it correctly. The target is
+level × gain.
+
+**The threshold has to follow the crescent down.** Thresholding at half a fixed
+percentile is the photosphere only while the crescent is larger than that
+percentile. Below it the threshold lands on sky and the answer silently becomes a
+sky level: `14_11_23` measured **0.025 where the answer was 0.73**. Not an error,
+just a wrong number, which is worse. The threshold now sits halfway between the
+sky and the frame's peak. There is a test asserting the old rule fails on a small
+crescent, so the reason for the design sits next to the design.
+
+And where the crescent cannot be measured at all, the correction is **held** from
+the nearest frame that could be, never reset to 1 — resetting puts a seam exactly
+where measurable meets unmeasurable.
+
+### Measured
+
+```
+                          spread within the capture
+                          before     after
+18 of 20 captures         11-103%     0.0%
+14_08_22                   48.9%      5.5%   (59 of 71 measurable)
+14_19_28                   37.5%     37.5%   (23 of 71 - crescent blown)
+14_13_00, 14_17_51           -          -    left alone, no crescent to measure
+
+seq 384 -> 385   -5.9%  ->  0.0%
+seq 386 -> 387  +13.6%  ->  0.0%
+seq 397 -> 398  -18.1%  ->  0.0%
+```
+
+`14_13_00` and `14_17_51` sit either side of totality, where the crescent is a
+saturated sliver; `14_19_28` is third contact re-emerging, where most frames are
+clipped in the raw. No gain recovers a clipped crescent, so those are left alone
+rather than corrected on a measurement that is not there.
+
+## Still open, and why
+
+**The bead dwell repeats 4.5x.** Arithmetic, not a bug: the small-bead window is
+67 raw frames — 2.87 s — and the dwell asks for 10 s, so each frame is held 4 or 5
+times, about 6.7 fps. The cadence is already as even as it can be (`5454545…`, 32
+fives against 35 fours), so there is nothing to smooth. The only real choices are
+a shorter `dwell.beads_s` (4.5 s gives a 2x hold) or interpolating intermediate
+frames, which would invent the bead geometry the dwell exists to show.
+
+**The filter-off ramp steps 6.5% at 25.80 s and 4.6% at 30.27 s.** Both are inside
+the deliberate resolve, where the gain goes from 4.19 to 27.31 — a few percent
+inside a 600% ramp is not worth chasing, and the segment either side is saturated
+so there is nothing better to measure against.
+
+**Corona tone mapping.** Starlet multiscale was tried and lost 26–44% of the
+baseline gradient. Not pursued.
 
 ## Caution: the validation tooling has been wrong TWICE — now three times
 
