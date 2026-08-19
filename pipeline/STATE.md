@@ -1027,6 +1027,66 @@ where the crescent genuinely flips to the other side of the disc.
 Identity was checked at the same time and is not the problem: the upper/lower
 labels never swap horns, with a worst-case y-separation of 196 px.
 
+## Superseded: inheritance is gone, the layout is a ring (2026-08-18)
+
+Everything above about INHERITED corners is history. Inheritance was solving the
+right problem — panels must not shuffle mid-clip — with a mechanism that caused a
+worse one. A corner held while its subject moves stops matching that subject's
+position, and once two panels are out of order their leaders CROSS: 294 frames,
+12% of the video, every one of them a four-prominence frame, with the topmost
+subject wired to the lower-right panel.
+
+A swap pass was written to untangle them and then thrown away. Swapping a crossing
+pair is strictly shorter by the triangle inequality, so it terminates and it works
+— but it repairs a symptom. Removing the cause is better and turns out to be
+simpler.
+
+**The features and the slots are both rings about the same centre**: the features
+on the limb, the slots around the frame. Sort each by angle, walk both in the same
+direction, match in order. No two leaders can cross — by construction, with
+nothing to untangle and no memory to keep, so the mid-clip shuffle inheritance was
+guarding against cannot arise either. The clip-median positions from the section
+above still feed it.
+
+That leaves only WHICH slots, and this is where the packing was hiding. Minimising
+total leader length always bunches, because the shortest leaders are the ones that
+never leave the crowded side: four prominences on the left of the disc took the
+three left slots and stacked their panels down one edge with the rest of the frame
+empty. The cost now subtracts `SPREAD_WEIGHT` px per radian of the TIGHTEST
+angular gap between the chosen slots. Swept, not guessed:
+
+| weight | packed frames | min gap |
+|---|---|---|
+| 0 | 1157 | 37 deg |
+| 400 | 1086 | 37 deg |
+| 1000 | 660 | 74 deg |
+| **2000** | **342** | **74 deg** |
+| 8000 | 342 | 74 deg |
+
+It saturates at 2000.
+
+**Eight slots, not six.** A panel may not sit on the disc — one at bottom centre
+once covered the bead chain it was magnifying — and the disc is round where the
+frame is not, leaving 616 px clear at the sides against 316 above and below. I
+first read that as "the top and bottom do not fit" and stopped at six. The right
+question was what size DOES fit: shrinking the panel from 420 to **292 px, 70% of
+the edge**, buys the entire perimeter instead of three slots a side. The panel is
+sized from the disc radius at layout time, so a data set whose disc leaves no room
+falls back to six on its own. `panels.use_top_bottom = false` keeps the larger
+panels deliberately.
+
+Measured on the delivered config (2393 frames, 2400x1800, panel 292 px):
+
+```
+crossing leaders      : 294 -> 0 frames
+tightest gap median   :  37 -> 90 deg      (even, for four panels)
+slot usage            : bottom 1766, top 1657, right 900, left 872,
+                        UL 808, LL 720, UR 466, LR 378
+```
+
+All eight in use, and the two that did not exist before are the two busiest —
+which is the measurement that says the old frame really was three-quarters unused.
+
 ## Caution: the validation tooling has been wrong TWICE — now three times
 
 `pjsr/sharpness.js` reported edge contrast FALLING 5.6% with stacking, and the
