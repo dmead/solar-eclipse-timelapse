@@ -107,7 +107,19 @@ SHOULDER_CEIL = 0.965
 #
 # Safe to widen because of where the corona is: v = 0.030, twenty times below the
 # knee. Everything this changes is currently one flat value.
-SHOULDER_MAX = 24.0
+# Swept on the bead limb and on the totality chromosphere, and looked at:
+#
+#   shoulder_max   1.6    3.0    6.0   12.0   24.0
+#   over 240      10.9%   4.8%   2.6%   2.1%   1.7%   of the bead limb
+#   grain rms      3.44   3.43   3.43   3.43   3.44
+#
+# The grain does not change - it was always there, and the old curve was
+# CLIPPING it away to white. So this is a choice about how much of the
+# chromosphere to show against how much of the bright glow to keep, and 24 gives
+# up too much: the limb goes flat and grey and reads as overstretched. At 3 the
+# chromosphere line and its prominences are distinguishable and the glow is
+# still there, with half the clipping the old curve had.
+SHOULDER_MAX = 3.0
 
 # Frame gap inside one capture that counts as a discontinuity.
 GAP_FRAMES = 60

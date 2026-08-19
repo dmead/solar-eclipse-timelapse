@@ -306,6 +306,35 @@ FEATURE_PRIORITY = ["baily's beads", "sunspot", "prominence",
 OVERLAP_MAX = 0.35
 
 
+# How far a limb feature's box centre may sit from the limb, in radii, before it
+# is dropped. Everything in this list lives ON the limb; a box centred well inside
+# the Moon is showing blank disc.
+LIMB_FEATURES = ("prominence", "baily's beads", "lunar limb",
+                 "upper cusp", "lower cusp")
+LIMB_BAND_R = 0.35
+
+
+def keep_on_limb(feats, mx, my, r_moon):
+    """Drop limb features whose box has wandered off the limb.
+
+    This class of fault renders as a perfectly clean empty panel - correct
+    label, correct leader, nothing inside - and nothing else in the pipeline
+    notices, because every stage downstream is happy to magnify blank sky. It
+    happened once already: an arc box centred on its bounding box rather than on
+    the arc sat at 0.58 R, entirely inside the Moon.
+    """
+    out = []
+    for f in feats:
+        if f[2] in LIMB_FEATURES:
+            r = math.hypot(f[0] - mx, f[1] - my)/r_moon
+            if abs(r - 1.0) > LIMB_BAND_R:
+                print("  dropped a %s panel centred at r=%.2f R - off the limb"
+                      % (f[2], r))
+                continue
+        out.append(f)
+    return out
+
+
 def drop_overlapping(feats, panel):
     """Remove features whose source box duplicates a higher-priority one.
 
@@ -448,15 +477,24 @@ def merge_into_arcs(g, band, picks, mx, my, r_moon, med, sigma):
 
     out = [(p[0], p[1], p[2], None) for p in singles]
     for (lo, hi), ps in groups.items():
-        # Bounding box of the arc itself, sampled along the run at the radii the
-        # annulus covers, so the box holds the chromosphere and anything standing
-        # off it.
+        # The arc, sampled along the run at the radii the annulus covers.
         angs = np.linspace(lo, hi + 1, 2*(hi - lo + 1) + 3)*2*math.pi/ARC_BINS - math.pi
         rs = np.array([PROM_R_INNER, 1.0, PROM_R_OUTER])*r_moon
         ax = np.outer(rs, np.cos(angs)).ravel()
         ay = np.outer(rs, np.sin(angs)).ravel()
-        cx, cy = 0.5*(ax.min() + ax.max()), 0.5*(ay.min() + ay.max())
-        half = 0.5*max(ax.max() - ax.min(), ay.max() - ay.min()) + ARC_PAD_R*r_moon
+
+        # Centre on the arc's MIDPOINT, which is on the limb, and not on the
+        # centre of its bounding box, which is not: the bbox of a 90 degree arc
+        # centres at about 0.6 R, inside the Moon. That is harmless while the box
+        # is big enough to reach back out and fatal once it is clamped, which is
+        # how seq 1740 came to hold an empty grey square labelled PROMINENCE.
+        mid = 0.5*(lo + hi + 1)*2*math.pi/ARC_BINS - math.pi
+        rmid = 0.5*(PROM_R_INNER + PROM_R_OUTER)*r_moon
+        cx, cy = rmid*math.cos(mid), rmid*math.sin(mid)
+
+        # Largest reach from THAT centre, so a box that fits holds the whole arc.
+        half = float(max(np.abs(ax - cx).max(), np.abs(ay - cy).max()))
+        half += ARC_PAD_R*r_moon
         # PANEL_PX is FINE px and `half` is plane px, so the zoom that
         # relates them carries the drizzle factor - the same 4 the bead
         # box uses. Getting this wrong halves every arc box silently.
@@ -1486,6 +1524,7 @@ def main():
                 feats.append((pts[0][0], pts[0][1], "upper cusp", czoom))
                 feats.append((pts[1][0], pts[1][1], "lower cusp", czoom))
 
+        feats = keep_on_limb(feats, mx, my, r_moon)
         feats = drop_overlapping(feats, args.panel)
         feats = feats[:4]
         counts[len(feats)] = counts.get(len(feats), 0) + 1
