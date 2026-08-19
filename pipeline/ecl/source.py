@@ -83,6 +83,15 @@ class Source:
     def is_cfa(self):
         return self.plane_scale != 1.0
 
+    @property
+    def cfa_pattern(self):
+        """Bayer layout id, or None when the frames are already RGB.
+
+        Only the full-resolution demosaic needs this. Everything else takes
+        `planes` and never learns how they were made.
+        """
+        return None
+
     # -- pixels ---------------------------------------------------------
     def planes(self, i):
         """(R, G, B) in [0, 1] at plane resolution."""
@@ -161,6 +170,10 @@ class SerSource(Source):
     def plane_scale(self):
         # colour_id 0 is mono; anything else here is a Bayer mosaic.
         return 0.5 if self._ser.color_id else 1.0
+
+    @property
+    def cfa_pattern(self):
+        return self._ser.color_id or None
 
     def planes(self, i):
         if self.plane_scale == 1.0:
