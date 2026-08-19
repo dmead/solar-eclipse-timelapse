@@ -37,13 +37,27 @@ CUTS = [
      "extra": ["-crf", "26", "-preset", "slow"]},
 ]
 
-_SEQ = re.compile(r"^seq_\d+\.png$")
+_SEQ = re.compile(r"^seq_(\d+)\.png$")
 
 
 def count_frames(frame_dir):
     if not os.path.isdir(frame_dir):
         raise FileNotFoundError(frame_dir)
     return sum(1 for f in os.listdir(frame_dir) if _SEQ.match(f))
+
+
+def first_frame(frame_dir):
+    """Lowest sequence number present, or 0.
+
+    Frames keep their position in the WHOLE video even when only part of it was
+    rendered, so a totality-only render starts at seq 638 and not at zero.
+    ffmpeg's numbered-sequence reader begins at 0 and stops at the first gap, so
+    without telling it where to start it finds nothing at all and writes an empty
+    file rather than failing.
+    """
+    ns = [int(_SEQ.match(f).group(1)) for f in os.listdir(frame_dir)
+          if _SEQ.match(f)]
+    return min(ns) if ns else 0
 
 
 def _ffmpeg():
@@ -53,12 +67,16 @@ def _ffmpeg():
     return exe
 
 
-def encode(frame_dir, out_path, fps, vf=None, extra=None, log=print):
+def encode(frame_dir, out_path, fps, vf=None, extra=None, log=print,
+           start_number=None):
     """One cut. Frames are read as a numbered sequence, never a glob — this
     ffmpeg build has no glob support, which is why the renderer numbers frames
     by their position in the video rather than within their shard."""
     os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
+    if start_number is None:
+        start_number = first_frame(frame_dir)
     cmd = [_ffmpeg(), "-y", "-framerate", str(fps),
+           "-start_number", str(start_number),
            "-i", f"{frame_dir}/seq_%05d.png"]
     if vf:
         cmd += ["-vf", vf]
@@ -83,9 +101,12 @@ def encode_deliverables(frame_dir, out_dir, fps, cuts=None, log=print):
     if not n:
         raise ValueError(f"no frames in {frame_dir}")
     cuts = cuts or CUTS
-    log(f"{n} frames at {fps} fps -> {len(cuts)} cuts")
+    start = first_frame(frame_dir)
+    log(f"{n} frames at {fps} fps -> {len(cuts)} cuts"
+        + (f" (starting at seq {start})" if start else ""))
     return [encode(frame_dir, f"{out_dir}/{c['name']}", fps,
-                   c["vf"], c["extra"], log=log) for c in cuts]
+                   c["vf"], c["extra"], log=log, start_number=start)
+            for c in cuts]
 
 
 def main(argv=None):
