@@ -210,6 +210,9 @@ Things worth changing first:
 | `geometry.radius_plane_px` | the survey measured the disc wrong |
 | `geometry.output_half_r` | you want more or less corona in frame |
 | `panels.zoom` | inset panels too tight or too loose |
+| `panels.min_clear_r` | panels crowd the disc, or you want the top/bottom slots back |
+| `select.flatten_max` | brightness still steps inside a capture, or is over-corrected |
+| `render.group_level_tol` | the renderer reports dropping a lot of frames from their groups |
 
 ---
 
