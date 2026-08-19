@@ -1196,6 +1196,53 @@ Worth remembering as a measurement lesson: counting how often the layout changed
 said everything was fine. The thing the eye called a jump never touched the
 layout.
 
+## A resume shard is not a contiguous run (2026-08-19)
+
+Reported as "at about 5 seconds the limb of the Moon takes a step or jitters
+backwards", and it was neither the track nor the data. It was a ghost of a
+different frame, put there by `--resume`.
+
+`--resume` drops the frames already on disk and hands what is left to the
+sharder, which slices it into equal contiguous pieces — contiguous **in the
+compacted list**, which is not contiguous in the video. A kill leaves a gap at the
+end of every one of the 24 shards, so the survivors are many separate runs: the
+last resume had 301 frames in **17 runs**, sliced into 24 shards. Most shards
+straddled a join.
+
+The renderer's own discontinuity test then fires on the join — different file, or
+an index gap over `GAP_FRAMES` — and starts a cross-dissolve against the
+previously rendered frame, which at a join belongs somewhere else in the video.
+
+Measured against a clean single-shard render of the same frames:
+
+```
+seq 177   shipped 229   clean 210   +11.7%
+seq 178   shipped 225   clean 213    +7.3%
+seq 179   shipped 235   clean 235     0.0%
+```
+
+A ghost decaying over exactly the dissolve length. A blended-in copy of another
+frame's limb is precisely what "steps backwards" looks like.
+
+Boundaries now land at every discontinuity as well as at every step, so a shard is
+always a contiguous run. Jobs can outnumber the workers; the pool queues them. A
+full render has no discontinuities and is unchanged.
+
+**The measurement lesson is the sharper half of this.** Everything I had been
+checking said the video was fine: frame order monotonic, sky pedestal flat to four
+decimal places, raw data times gain moving 0.9% across that seam. All true, all
+irrelevant — the fault was introduced downstream of every one of them. It took
+re-rendering the same frames a second way and diffing the two to see it, and that
+comparison is the one to reach for first next time.
+
+### Still open: the segment boundary lands after the exposure change
+
+Separately, and genuinely in the data, the raw photosphere jumps **27% at seq
+179** (index 940–952 of `14_00_16`). The operator's exposure change begins before
+the segment boundary at raw index 953, so that segment's last stack averages
+frames that are partly post-change and is then given the pre-change gain. Not yet
+addressed.
+
 ## Caution: the validation tooling has been wrong TWICE — now three times
 
 `pjsr/sharpness.js` reported edge contrast FALLING 5.6% with stacking, and the
