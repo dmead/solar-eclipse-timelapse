@@ -111,7 +111,7 @@ def tune(out_dir, log=None):
     global CUSP_HALF_MIN, CUSP_HALF_MAX, BEAD_HALF_MIN, BEAD_HALF_MAX
     global BEAD_MIN_AREA, BEAD_MAX_THICK, BEAD_ARC_MAX, BEAD_ARC_MIN
     global BEAD_R_INNER, BEAD_R_OUTER, BEAD_SAT, BEAD_NEAR_FRAMES, BEAD_RUN_GAP
-    global ZOOM, PANEL_PX
+    global ZOOM, PANEL_PX, USE_TOP_BOTTOM
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from ecl.params import load
 
@@ -135,6 +135,7 @@ def tune(out_dir, log=None):
     BEAD_NEAR_FRAMES = P.get("beads.near_frames", BEAD_NEAR_FRAMES)
     BEAD_RUN_GAP = P.get("beads.run_gap", BEAD_RUN_GAP)
     ZOOM = P.get("panels.zoom", ZOOM)
+    USE_TOP_BOTTOM = P.get("panels.use_top_bottom", USE_TOP_BOTTOM)
     if log:
         log(f"  tuned to r={P.radius_px:.0f}px: cusp box "
             f"{CUSP_HALF_MIN:.0f}-{CUSP_HALF_MAX:.0f}, bead box "
@@ -539,6 +540,31 @@ CUSP_HALF_MAX = 46.0
 # change corners between clips. A near-tie must not be enough.
 LAYOUT_MARGIN = 0.20
 
+# Panel inset from the frame edge, FINE px - must match draw_insets.
+PANEL_MARGIN = 24
+# Below this a panel is too small to read; six slots are used instead.
+PANEL_MIN_PX = 200
+USE_TOP_BOTTOM = True
+
+# Pixels of extra leader length worth paying per radian of extra spacing between
+# panels. Length alone always bunches: the shortest leaders are the ones that
+# never leave the crowded side of the frame, so with four prominences on the left
+# of the disc all four panels stack down the left edge.
+#
+# Swept over the whole video, counting frames where three or more panels end up
+# on one half of the frame:
+#
+#   weight      0    400   1000   2000   4000   8000
+#   packed   1157   1086    660    342    342    342
+#   min gap    37     37     74     74     74     74   degrees
+#   leader     560    570    715    728    728    728   px at p90
+#
+# It saturates at 2000 - past that the spread term dominates every comparison it
+# can win and nothing further changes. The residue of 342 is not a tuning
+# failure: a three-panel clip has no balanced arrangement across six slots, and
+# some of those genuinely belong on one side.
+SPREAD_WEIGHT = 2000.0
+
 
 def find_cusps(g, cx, cy, r_sun):
     """The two ends of the LIT arc on the Sun's limb, read off the picture.
@@ -855,23 +881,41 @@ def main():
     crossing penalty room to work, since there is now usually a slot on the same
     side as the subject.
 
-    SIX, not eight: only the left and right midpoints fit.
+    Eight slots where the frame has room, six where it does not.
 
-    The frame is 2240x1680 and the disc is 1168 across, so there is 536 px of
-    clear space beside it and only 256 above and below. A 420 px panel fits the
-    first and not the second - rendered, the top and bottom midpoints sat 164 px
-    over the disc, and the bottom one covered the bead chain it was pointing at.
-    A panel that hides the subject is worse than a long leader, so those two are
-    not offered. Shrinking them to 256 px would fit, at the cost of two panels a
-    different size from the other four.
+    A panel may not sit on the disc - it would hide the very thing it points at,
+    and a bottom-centre panel once covered the bead chain it was magnifying. The
+    disc is round and the frame is not, so there is far more clear space beside
+    it than above it: 616 px against 316 in this window. A full-size panel fits
+    the sides and not the top.
 
-    Order matters and is shared with `tl_render.draw_insets`: 0-3 are the corners
-    (upper-left, lower-left, upper-right, lower-right), then 4 left and 5 right.
+    So the panel is SHRUNK to whatever clears the disc when the top and bottom
+    are wanted - 292 px instead of 420 here, 70% of the edge - and that buys the
+    whole perimeter to spread panels around instead of three slots a side. Set
+    panels.use_top_bottom = false to keep the bigger panels instead.
+
+    Order matters and is shared with `tl_render.draw_insets`: 0-3 the corners
+    (upper-left, lower-left, upper-right, lower-right), 4 left, 5 right, then
+    6 top and 7 bottom.
     """
-    perms = {k: list(itertools.permutations(range(6), k)) for k in range(1, 5)}
     ow, oh = cfg["outW"], cfg["outH"]
     corner_xy = [(0.0, 0.0), (0.0, oh), (ow, 0.0), (ow, oh),
                  (0.0, oh / 2), (ow, oh / 2)]
+    if USE_TOP_BOTTOM:
+        # Largest panel whose top/bottom placement still clears the disc, in
+        # FINE px; the slot list only grows if one actually fits.
+        fit = int((2 * oh - 2 * 2 * r_moon) / 2) - PANEL_MARGIN
+        if fit >= PANEL_MIN_PX:
+            if fit < args.panel:
+                print("  panel %d -> %d px so the top and bottom slots clear "
+                      "the disc" % (args.panel, fit))
+                args.panel = fit
+            corner_xy += [(ow / 2, 0.0), (ow / 2, oh)]
+        else:
+            print("  no room for top/bottom panels (%d px clear); "
+                  "using six slots" % max(fit, 0))
+    perms = {k: list(itertools.permutations(range(len(corner_xy)), k))
+             for k in range(1, 5)}
 
     """
     A leader must not be routed across the Moon.
@@ -901,6 +945,15 @@ def main():
         return math.hypot(fx + t*dx - disc[0], fy + t*dy - disc[1]) < r
 
     CROSS_PENALTY = 10_000.0
+
+    def _side(a, b, c):
+        return (b[0] - a[0])*(c[1] - a[1]) - (b[1] - a[1])*(c[0] - a[0])
+
+    def leaders_cross(p1, p2, q1, q2):
+        """Do segments p1-p2 and q1-q2 properly cross?"""
+        d1, d2 = _side(q1, q2, p1), _side(q1, q2, p2)
+        d3, d4 = _side(p1, p2, q1), _side(p1, p2, q2)
+        return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0))
 
     def leader_cost(fx, fy, corner, r):
         d = math.hypot(fx - corner[0], fy - corner[1])
@@ -1241,54 +1294,79 @@ def main():
     video. Re-deciding there is expected, and hidden by it.
     """
     layout = {}
-    prev = []                 # (x, y, label, corner) from the previous clip
-    prev_state = None
-    n_switch = 0
     for key in order:
         rows = groups[key]
         n = len(rows[0][1])
         labels = list(key[1])
-        state = rows[0][0]["state"]
-        if state != prev_state:
-            prev = []
-        prev_state = state
-
         med = []
         for i in range(n):
             xs = sorted(t[1][i][0] - (t[0]["cx"] - ow/2.0) for t in rows)
             ys = sorted(t[1][i][1] - (t[0]["cy"] - oh/2.0) for t in rows)
             med.append((xs[len(xs)//2], ys[len(ys)//2]))
 
-        assigned = [None]*n
-        used, taken = set(), set()
-        # Nearest-predecessor inheritance, closest pairs first so the obvious
-        # matches are made before the ambiguous ones.
-        pairs = sorted(
-            ((math.hypot(med[i][0] - p[0], med[i][1] - p[1]), i, j)
-             for i in range(n) for j, p in enumerate(prev) if p[2] == labels[i]))
-        for _d, i, j in pairs:
-            if assigned[i] is not None or j in taken or prev[j][3] in used:
-                continue
-            assigned[i] = prev[j][3]
-            used.add(prev[j][3])
-            taken.add(j)
+        """
+        Assign by ANGLE around the disc, not by nearest free slot.
 
-        rest = [i for i in range(n) if assigned[i] is None]
-        if rest:
-            free = [c for c in range(len(corner_xy)) if c not in used]
-            pick = min(itertools.permutations(free, len(rest)),
-                       key=lambda pm: sum(
-                           leader_cost(med[rest[j]][0], med[rest[j]][1],
-                                       corner_xy[pm[j]], r_moon)
-                           for j in range(len(rest))))
-            for j, i in enumerate(rest):
-                assigned[i] = pick[j]
-            n_switch += 1
-            print("  %-14s placed %s"
-                  % (key[0], ", ".join(labels[i] for i in rest)))
+        Two things were wrong with nearest-free-slot plus inheritance. It packed:
+        four prominences on the left of the disc took the three left slots and
+        stacked their panels down one edge while the rest of the frame sat empty.
+        And it tangled: a slot held while its subject moved stopped matching that
+        subject's position, so 294 frames - 12% of the video - had leaders
+        crossing each other, which a swap pass then had to repair. Repairing a
+        symptom is not the same as removing the cause.
+
+        The features and the slots are both rings about the same centre: the
+        features on the limb, the slots around the frame. Walk both rings in the
+        same direction and match them in order, and no two leaders can cross -
+        by construction, with nothing to untangle afterwards. That leaves only
+        WHICH slots to use, and picking the most evenly spread subset is what
+        pushes the panels out around the whole frame instead of bunching them
+        where the subjects happen to be.
+
+        Cost is total leader length, less a reward for the tightest angular gap
+        between the chosen slots. Length alone always bunches - the shortest
+        leaders are the ones that never leave the crowded side.
+        """
+        cx0, cy0 = ow/2.0, oh/2.0
+        f_ang = [math.atan2(p[1] - cy0, p[0] - cx0) for p in med]
+        f_ord = sorted(range(n), key=lambda i: f_ang[i])
+
+        # Slot centres, ordered around the frame the same way.
+        s_ang = [math.atan2(c[1] - cy0, c[0] - cx0) for c in corner_xy]
+        s_ord = sorted(range(len(corner_xy)), key=lambda c: s_ang[c])
+
+        def gap_score(chosen):
+            """Smallest angular gap between the chosen slots, in radians."""
+            if len(chosen) < 2:
+                return math.pi
+            a = sorted(s_ang[c] for c in chosen)
+            gaps = [a[i + 1] - a[i] for i in range(len(a) - 1)]
+            gaps.append(a[0] + 2*math.pi - a[-1])
+            return min(gaps)
+
+        best, best_cost = None, float("inf")
+        for combo in itertools.combinations(range(len(s_ord)), n):
+            ring = [s_ord[c] for c in combo]          # already in cyclic order
+            for rot in range(n):
+                cand = [None]*n
+                ok = True
+                total = 0.0
+                for j, fi in enumerate(f_ord):
+                    slot = ring[(j + rot) % n]
+                    cand[fi] = slot
+                    total += leader_cost(med[fi][0], med[fi][1],
+                                         corner_xy[slot], r_moon)
+                    if total >= best_cost + SPREAD_WEIGHT*math.pi:
+                        ok = False
+                        break
+                if not ok:
+                    continue
+                cost = total - SPREAD_WEIGHT*gap_score(ring)
+                if cost < best_cost:
+                    best, best_cost = cand, cost
+        assigned = best
 
         layout[key] = tuple(assigned)
-        prev = [(med[i][0], med[i][1], labels[i], assigned[i]) for i in range(n)]
 
     for f, feats in per_frame:
         if not feats:
@@ -1311,9 +1389,8 @@ def main():
     cfg["discR"] = r_moon
     json.dump(cfg, open(cfgpath, "w"))
     print("panel %d px at %.1fx (source box %.0f superpixel); cusps on %d of %d "
-          "frames; %d of %d clips move a panel"
-          % (args.panel, args.zoom, 2 * halfsp, n_cusp, len(frames), n_switch,
-             len(layout)))
+          "frames; %d clip layouts"
+          % (args.panel, args.zoom, 2 * halfsp, n_cusp, len(frames), len(layout)))
     print("panels per frame: %s"
           % ", ".join("%d on %d frames" % (k, counts[k]) for k in sorted(counts)))
     print("updated %s" % cfgpath)

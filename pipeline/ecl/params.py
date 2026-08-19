@@ -47,6 +47,13 @@ DEFAULTS = {
         "output_half_r": 2.2,
         "min_half_r": 1.6,
         "max_padded_fraction": 0.35,
+        # Width over height. 4:3 rather than 16:9 because the subject is round:
+        # a wide window buys corona at the sides that a short one loses above and
+        # below, and the corona does not care which way it is measured. Every
+        # render before this was made with an explicit 1120x840, which is 4:3;
+        # the auto-sizer had 16/9 hardcoded and silently produced a window
+        # 2.19 R wide by 1.22 R tall instead of 2.01 by 1.51.
+        "aspect": 1.3333333,
         # Window dimensions are rounded to a multiple of this many pixels.
         "size_step": 20,
     },
@@ -71,6 +78,17 @@ DEFAULTS = {
         # a 1680 px tall frame.
         "size_frac": 0.25,
         "zoom": 4.0,
+        # Use the top and bottom edges as well as the corners and sides.
+        #
+        # The panel is shrunk to whatever clears the disc when this is on. The
+        # disc is 1168 px across in an 1800 px frame, so there are 616 px free at
+        # the sides and only 316 above and below: a 420 px panel fits beside the
+        # disc and not over it. Eight slots at 292 px against six at 420 - the
+        # whole perimeter usable, at 70% of the panel area.
+        #
+        # Turn it off to keep the larger panels and accept that features
+        # clustered on one side of the Sun put their panels down one edge.
+        "use_top_bottom": True,
         "expose": True,
         "expose_pct": 99.5,
         "expose_target": 0.85,
@@ -133,11 +151,13 @@ _COMMENTS = {
     "geometry.radius_plane_px": "0 = use the radius measured by the survey",
     "geometry.output_half_r": "output window half-width in solar radii (window = 2 x this x radius)",
     "geometry.min_half_r": "never shrink the window below this half-width",
+    "geometry.aspect": "output width / height; 1.3333 = 4:3, 1.7778 = 16:9",
     "render.drizzle": "0 = auto (aims for a 500 px fine-grid disc radius)",
     "render.workers": "0 = auto (physical cores, capped by free memory)",
     "render.max_group_shift_r": "largest believable intra-group shift, in radii",
     "render.engine": "'ported' or 'skimage' phase correlator",
     "panels.size_frac": "panel edge as a fraction of the output short side",
+    "panels.use_top_bottom": "use the top/bottom edges too, shrinking the panel to clear the disc",
     "panels.cusp_half_r": "[min, max] cusp box half-width, in radii",
     "panels.bead_half_r": "[min, max] bead box half-width, in radii",
     "panels.prom_sep_r": "minimum separation between prominence picks, in radii",
