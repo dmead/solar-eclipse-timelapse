@@ -1168,6 +1168,34 @@ The leaders get longer, and that is the trade the corners buy: a corner is the
 furthest point in the frame from a feature on the limb. They pass behind the disc
 rather than over it, so the extra length is drawn on corona, not on the Moon.
 
+### The jump that was not a layout problem at all
+
+Chasing "too many jumps" through the layout found only 10 slot changes in 2393
+frames, so most of the chaos had to be something else. It was: **panel 4 in
+14_14_36 moved 561 px in one frame** - right limb to left limb, the width of the
+Sun - inside a single clip, with its slot unchanged the whole time.
+
+Prominences were detected per exposure LEVEL (file plus gain) and returned ranked
+by strength, four kept. At gain 1.23 a fainter prominence on the left became
+detectable, outranked the right-limb one, and took its place in the list; the
+panel pointing at rank 4 followed it across the disc.
+
+`PROM_LEVEL_MIN` was an earlier fix for exactly this, and it missed: it required 8
+frames before a level detected its own set, and the level that caused this has
+119. Frame count was never the right axis. A capture is two seconds, its levels
+are exposure brackets of one moment, and the prominences do not move between them
+- so each capture is detected once now, on the level with the most frames behind
+it, and the threshold is deleted rather than retuned.
+
+```
+largest in-clip box step   561 px -> 5.3 px
+p99 in-clip box step       2.0 px -> 2.0 px   (unchanged)
+```
+
+Worth remembering as a measurement lesson: counting how often the layout changed
+said everything was fine. The thing the eye called a jump never touched the
+layout.
+
 ## Caution: the validation tooling has been wrong TWICE — now three times
 
 `pjsr/sharpness.js` reported edge contrast FALLING 5.6% with stacking, and the
