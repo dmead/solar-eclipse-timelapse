@@ -73,6 +73,11 @@ DEFAULTS = {
         # frames after the exposure actually changed. Within a group the level
         # moves 0.5%; the smallest exposure step between segments here is 39%.
         "group_level_tol": 0.08,
+        # Input level the highlight curve maps to the ceiling. The old tanh
+        # shoulder ran out at v=1.57 while the totality limb reaches v=23.5, so
+        # 8% of it rendered as one flat grey. The corona is at v=0.03, far below
+        # the knee, so widening this cannot darken it.
+        "shoulder_max": 24.0,
         # Largest intra-group alignment shift believed, in radii. 4 px at r=279.
         "max_group_shift_r": 0.0143,
         "engine": "ported",
@@ -125,6 +130,18 @@ DEFAULTS = {
         "prom_r_inner": 0.90,
         "prom_r_outer": 1.25,
         "prom_min_snr": 8.0,
+        # A prominence pick sitting on a long run of chromosphere is boxed to the
+        # whole run rather than to a fixed size, and picks sharing a run merge
+        # into one panel. Measured, not assumed: at seq 1200 the arc ran 65 deg
+        # and an isolated prominence 5 deg.
+        "arc_snr": 5.0,
+        "arc_gap_deg": 3.0,
+        "arc_min_deg": 12.0,
+        "arc_pad_r": 0.06,
+        "arc_min_zoom": 1.5,
+        # Share of the smaller source box that may lie inside another before the
+        # two panels are treated as showing the same thing.
+        "overlap_max": 0.35,
         "spot_max_r": 0.90,
         "spot_ring_r": 0.072,
         "moon_fit_max_rms_r": 0.043,
@@ -191,6 +208,7 @@ _COMMENTS = {
     "render.max_group_shift_r": "largest believable intra-group shift, in radii",
     "render.engine": "'ported' or 'skimage' phase correlator",
     "render.group_level_tol": "level change that drops a raw frame from its stacking group",
+    "render.shoulder_max": "input level mapped to the highlight ceiling",
     "select.min_crescent_r2": "smallest crescent, in r^2, that can be normalized on",
     "select.crescent_sat": "crescent level above which the raw data is clipped",
     "select.flatten_max": "largest within-capture brightness correction allowed",
@@ -205,6 +223,9 @@ _COMMENTS = {
     "panels.cusp_half_r": "[min, max] cusp box half-width, in radii",
     "panels.bead_half_r": "[min, max] bead box half-width, in radii",
     "panels.prom_sep_r": "minimum separation between prominence picks, in radii",
+    "panels.arc_snr": "sigmas over the annulus at which the limb counts as lit",
+    "panels.arc_min_deg": "shortest run that is an arc rather than a point",
+    "panels.arc_min_zoom": "least magnification a panel may drop to holding an arc",
     "beads.min_area_r2": "smallest clipped area called a bead, as a fraction of r^2",
     "beads.max_blob_frac": "above this the clipped region is one blob: diamond ring, not beads",
     "dwell.resolve_s": "screen seconds for the filter-off sequence",

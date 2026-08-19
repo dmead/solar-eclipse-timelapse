@@ -96,6 +96,19 @@ SHOULDER_KNEE = 0.60
 # possible pixel lands at 249 after the display gamma.
 SHOULDER_CEIL = 0.965
 
+# Input level mapped to the ceiling - how far above the knee the curve still
+# separates anything.
+#
+# The old shoulder was a tanh whose scale was the output range it had left, so it
+# ran out about 2.65 spans above the knee: at SHOULDER_KNEE 0.60 that is v = 1.57.
+# Measured on the totality prominence exposure, the limb annulus runs from v =
+# 0.43 at its median to v = 23.5 at p99.9 - 5.8 stops - so 8.1% of it rendered as
+# a single grey, which is the white blob the panels were showing structure in.
+#
+# Safe to widen because of where the corona is: v = 0.030, twenty times below the
+# knee. Everything this changes is currently one flat value.
+SHOULDER_MAX = 24.0
+
 # Frame gap inside one capture that counts as a discontinuity.
 GAP_FRAMES = 60
 
@@ -162,7 +175,7 @@ def tune(out_dir, log=None):
     """Resolve the render constants from the config against the survey."""
     global DRIZZLE, MAX_GROUP_SHIFT_PX, GAMMA, SHOULDER_KNEE, SHOULDER_CEIL
     global PEDESTAL_PCT, PEDESTAL_FRAC, GAIN_JUMP, GAP_FRAMES, PANEL_EXPOSE
-    global PANEL_EXPOSE_STRENGTH, OCCLUDE_LEADERS
+    global PANEL_EXPOSE_STRENGTH, OCCLUDE_LEADERS, SHOULDER_MAX
     global GROUP_LEVEL_TOL
     global PANEL_EXPOSE_PCT, PANEL_EXPOSE_TARGET, DEFAULT_ENGINE
     from .params import load
@@ -181,6 +194,8 @@ def tune(out_dir, log=None):
     PANEL_EXPOSE_STRENGTH = P.get("panels.expose_strength",
                                   PANEL_EXPOSE_STRENGTH)
     OCCLUDE_LEADERS = P.get("panels.occlude_leaders", OCCLUDE_LEADERS)
+    SHOULDER_MAX = P.get("render.shoulder_max", SHOULDER_MAX)
+    _SHOULDER_CACHE.clear()
     PANEL_EXPOSE = P.get("panels.expose", PANEL_EXPOSE)
     PANEL_EXPOSE_PCT = P.get("panels.expose_pct", PANEL_EXPOSE_PCT)
     PANEL_EXPOSE_TARGET = P.get("panels.expose_target", PANEL_EXPOSE_TARGET)
@@ -277,12 +292,47 @@ def apply_gain(v, gain, pedestal=0.0):
     if pedestal:
         v -= np.float32(pedestal)
     v *= np.float32(gain)
-    span = SHOULDER_CEIL - SHOULDER_KNEE
     over = v > SHOULDER_KNEE
     if over.any():
-        v[over] = SHOULDER_KNEE + span * np.tanh((v[over] - SHOULDER_KNEE) / span)
+        s, a = _shoulder_shape()
+        v[over] = SHOULDER_KNEE + a * np.log1p((v[over] - SHOULDER_KNEE) / s)
+        np.minimum(v, np.float32(SHOULDER_CEIL), out=v)
     np.maximum(v, 0, out=v)
     return v
+
+
+_SHOULDER_CACHE = {}
+
+
+def _shoulder_shape():
+    """(s, a) for the highlight curve, cached per parameter set.
+
+    `a` places SHOULDER_MAX on the ceiling; `s` is solved so the slope through
+    the knee is exactly 1, which is what keeps the curve C1 with the linear part
+    below it. Without that the join is visible as a band on a smooth gradient.
+
+        v' = K + a * log1p((v - K) / s)
+        a  = (C - K) / log1p((MAX - K) / s)
+        slope at K = a / s = 1   ->   s * log1p((MAX - K) / s) = C - K
+    """
+    key = (SHOULDER_KNEE, SHOULDER_CEIL, SHOULDER_MAX)
+    got = _SHOULDER_CACHE.get(key)
+    if got is not None:
+        return got
+    span = SHOULDER_CEIL - SHOULDER_KNEE
+    top = max(SHOULDER_MAX - SHOULDER_KNEE, 1e-6)
+    lo, hi = 1e-6, span
+    for _ in range(60):                       # s*log1p(top/s) rises with s
+        mid = 0.5 * (lo + hi)
+        if mid * math.log1p(top / mid) < span:
+            lo = mid
+        else:
+            hi = mid
+    s_ = 0.5 * (lo + hi)
+    a_ = span / math.log1p(top / s_)
+    got = (np.float32(s_), np.float32(a_))
+    _SHOULDER_CACHE[key] = got
+    return got
 
 
 def sky_pedestal(plane):
