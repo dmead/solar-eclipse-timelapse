@@ -409,26 +409,24 @@ def find_prominences(data_dir, frame, mx, my, r_moon, n):
         # Blank a neighbourhood so the next pick is a different prominence and
         # not the pixel next door.
         v[np.hypot(xx - px, yy - py) < PROM_MIN_SEP_PX] = -np.inf
-    return merge_into_arcs(g, band, out, mx, my, r_moon, med, sigma)
+    return size_to_arc(g, band, out, mx, my, r_moon, med, sigma)
 
 
-def merge_into_arcs(g, band, picks, mx, my, r_moon, med, sigma):
-    """Group point picks into the chromospheric arcs they stand on.
+def size_to_arc(g, band, picks, mx, my, r_moon, med, sigma):
+    """Give each pick a box sized to the chromosphere it stands on.
 
-    Returns (dx, dy, snr, half) - the last being the box half-width in plane px,
-    so a panel can be sized to its subject instead of to a constant.
+    Returns (dx, dy, snr, half) - half being the box half-width in plane px, or
+    None to keep the configured default.
 
     The annulus is projected onto AZIMUTH, taking the strongest pixel at each
     angle, and thresholded against the same robust background the picks were made
-    against. That gives the runs of limb that carry chromosphere. A pick inside a
-    long run is not really a point: at seq 1200 two of four picks sat inside one
-    65 degree run and their panels showed different slices of the same arc.
+    against. That gives the runs of limb carrying chromosphere, and the run
+    through a pick says how far its box can usefully grow.
 
-    Picks sharing a run are merged into one feature whose box is the bounding box
-    of the run, so the panel holds the whole thing including both ends. A pick
-    whose run is short keeps the default box - the measurement decides, which is
-    what makes this work on a different eclipse or focal length rather than only
-    on this one.
+    An earlier version MERGED picks sharing a run, which is wrong: during totality
+    the chromosphere is continuous over much of the limb, so that collapsed
+    prominences 40 degrees apart into one panel and left obvious ones unmarked.
+    Overlap is decided later, on area, by drop_overlapping.
     """
     if not picks:
         return []
@@ -451,55 +449,37 @@ def merge_into_arcs(g, band, picks, mx, my, r_moon, med, sigma):
                 lit[i] = True
                 break
 
-    def run_of(b):
-        """(lo, hi) bin range of the lit run containing bin b, or None."""
+    cap = PANEL_PX/(4.0*ARC_MIN_ZOOM)     # PANEL_PX is FINE px, half is plane px
+    rmid = 0.5*(PROM_R_INNER + PROM_R_OUTER)*r_moon
+    reach = max(cap - ARC_PAD_R*r_moon, 1.0)
+    win = max(int(round(math.asin(min(1.0, reach/rmid))/(2*math.pi)*ARC_BINS)), 1)
+    rs = np.array([PROM_R_INNER, 1.0, PROM_R_OUTER])*r_moon
+
+    out = []
+    for px, py, snr in picks:
+        b = int((math.atan2(py, px) + math.pi)/(2*math.pi)*ARC_BINS) % ARC_BINS
         if not lit[b] or lit.all():
-            return None
+            out.append((px, py, snr, None))
+            continue
         lo = hi = b
-        while lit[(lo - 1) % ARC_BINS]:
+        while lit[(lo - 1) % ARC_BINS] and hi - lo < ARC_BINS - 1:
             lo -= 1
-        while lit[(hi + 1) % ARC_BINS]:
+        while lit[(hi + 1) % ARC_BINS] and hi - lo < ARC_BINS - 1:
             hi += 1
-        # Canonical: a run straddling the wrap point is reached as (-50, 30) from
-        # one side and (670, 750) from the other. Left as-is those are two keys
-        # for one arc, and two picks on it produce two identical panels.
-        return lo % ARC_BINS, lo % ARC_BINS + (hi - lo)
+        if (hi - lo + 1)*360.0/ARC_BINS < ARC_MIN_DEG:
+            out.append((px, py, snr, None))
+            continue
 
-    groups, singles = {}, []
-    for p in picks:
-        b = int((math.atan2(p[1], p[0]) + math.pi)/(2*math.pi)*ARC_BINS) % ARC_BINS
-        r = run_of(b)
-        span = 0.0 if r is None else (r[1] - r[0] + 1)*360.0/ARC_BINS
-        if r is None or span < ARC_MIN_DEG:
-            singles.append(p)
-        else:
-            groups.setdefault(r, []).append(p)
-
-    out = [(p[0], p[1], p[2], None) for p in singles]
-    for (lo, hi), ps in groups.items():
-        # The arc, sampled along the run at the radii the annulus covers.
-        angs = np.linspace(lo, hi + 1, 2*(hi - lo + 1) + 3)*2*math.pi/ARC_BINS - math.pi
-        rs = np.array([PROM_R_INNER, 1.0, PROM_R_OUTER])*r_moon
+        # Grow along the arc from the pick, as far as the run goes and the panel
+        # allows. Centred on the pick, so the thing the panel is named after is
+        # in the middle of it whatever the arc does either side.
+        a0, a1 = max(lo, b - win), min(hi, b + win)
+        angs = np.linspace(a0, a1 + 1, 2*(a1 - a0 + 1) + 3)*2*math.pi/ARC_BINS - math.pi
         ax = np.outer(rs, np.cos(angs)).ravel()
         ay = np.outer(rs, np.sin(angs)).ravel()
-
-        # Centre on the arc's MIDPOINT, which is on the limb, and not on the
-        # centre of its bounding box, which is not: the bbox of a 90 degree arc
-        # centres at about 0.6 R, inside the Moon. That is harmless while the box
-        # is big enough to reach back out and fatal once it is clamped, which is
-        # how seq 1740 came to hold an empty grey square labelled PROMINENCE.
-        mid = 0.5*(lo + hi + 1)*2*math.pi/ARC_BINS - math.pi
-        rmid = 0.5*(PROM_R_INNER + PROM_R_OUTER)*r_moon
-        cx, cy = rmid*math.cos(mid), rmid*math.sin(mid)
-
-        # Largest reach from THAT centre, so a box that fits holds the whole arc.
-        half = float(max(np.abs(ax - cx).max(), np.abs(ay - cy).max()))
-        half += ARC_PAD_R*r_moon
-        # PANEL_PX is FINE px and `half` is plane px, so the zoom that
-        # relates them carries the drizzle factor - the same 4 the bead
-        # box uses. Getting this wrong halves every arc box silently.
-        half = min(half, PANEL_PX/(4.0*ARC_MIN_ZOOM))
-        out.append((float(cx), float(cy), max(p[2] for p in ps), float(half)))
+        half = float(max(np.abs(ax - px).max(), np.abs(ay - py).max()))
+        half = min(half + ARC_PAD_R*r_moon, cap)
+        out.append((px, py, snr, float(half)))
     return out
 
 
