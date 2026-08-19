@@ -57,6 +57,9 @@ CORONA_RADII = 2.2
 MIN_RADII = 1.6
 MAX_PADDED_FRACTION = 0.35
 
+# Output width over height. See geometry.aspect in the config.
+ASPECT = 4.0 / 3.0
+
 
 def tune(out_dir, log=None):
     """Resolve the track thresholds from the config against the survey.
@@ -67,7 +70,7 @@ def tune(out_dir, log=None):
     global TRUST_FLOOR_PX, MAX_RESIDUAL_PX, UNPLACEABLE_SPREAD_PX
     global FOLLOW_EXCURSION_PX, FOLLOW_STEP_PX, FOLLOW_LINE_TOL_PX, THRASH_PX
     global LEVEL_BIAS_MAX_PX, TRUST_K, CORONA_SMOOTH_S, SIZE_STEP
-    global CORONA_RADII, MIN_RADII, MAX_PADDED_FRACTION
+    global CORONA_RADII, MIN_RADII, MAX_PADDED_FRACTION, ASPECT
     import os as _os
     import sys as _sys
     _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
@@ -91,6 +94,7 @@ def tune(out_dir, log=None):
     CORONA_RADII = P.get("geometry.output_half_r", CORONA_RADII)
     MIN_RADII = P.get("geometry.min_half_r", MIN_RADII)
     MAX_PADDED_FRACTION = P.get("geometry.max_padded_fraction", MAX_PADDED_FRACTION)
+    ASPECT = P.get("geometry.aspect", ASPECT)
     if log:
         log(f"  tuned to r={P.radius_px:.0f}px: trust floor "
             f"{TRUST_FLOOR_PX:.1f}px, thrash {THRASH_PX:.1f}px")
@@ -987,10 +991,10 @@ def main():
     else:
         # Size the window to the subject, not to what happens to be clip-free.
         ow = int(round(2 * CORONA_RADII * rSun / SIZE_STEP)) * SIZE_STEP
-        oh = int(round(ow * 9 / 16 / SIZE_STEP)) * SIZE_STEP
+        oh = int(round(ow / ASPECT / SIZE_STEP)) * SIZE_STEP
         while ow > 2 * MIN_RADII * rSun and padded_fraction(ow, oh) > MAX_PADDED_FRACTION:
             ow -= SIZE_STEP
-            oh = int(round(ow * 9 / 16 / SIZE_STEP)) * SIZE_STEP
+            oh = int(round(ow / ASPECT / SIZE_STEP)) * SIZE_STEP
     print("output window %dx%d (%dx%d full-res) = %.2f R wide, %.2f R tall; "
           "%.1f%% of frames reach past an edge"
           % (ow, oh, ow * 2, oh * 2, ow / 2 / rSun, oh / 2 / rSun,
