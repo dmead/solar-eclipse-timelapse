@@ -24,7 +24,7 @@ from .vendor.core.warp import resample
 
 from .demosaic import bilinear_rggb
 from .imgio import write_png
-from .serio import EclipseSer
+from .source import open_source
 
 PREVIEW_WIDTH = 960
 PREVIEW_GAMMA = 0.45
@@ -48,18 +48,23 @@ def export_frames(src, start, count, stride=1, out_dir=".", prefix="frame",
     os.makedirs(out_dir, exist_ok=True)
     written = []
 
-    with EclipseSer(src) as ser:
-        if not ser.bayer:
-            raise ValueError(f"{src}: colorId {ser.color_id} is not a Bayer layout")
+    with open_source(src) as ser:
         count = min(count, ser.frame_count - start)
+        cfa = ser.cfa_pattern
         log(f"frames {src}")
-        log(f"  {ser.raw_width}x{ser.raw_height} colorId={ser.color_id} -> {mode}, "
+        log(f"  {ser.describe()} -> {mode}, "
             f"frames [{start}..{start + count - 1}] stride {stride}")
 
         for k in range(0, count, stride):
             fi = start + k
-            rgb = bilinear_rggb(ser.raw(fi), max_value=ser.max_value,
-                                color_id=ser.color_id)
+            if cfa is not None:
+                # Full-resolution bilinear, not the superpixel planes the rest of
+                # the pipeline uses: this exporter exists to show the bead chain
+                # at the scale the sensor recorded it.
+                rgb = bilinear_rggb(ser.raw(fi), max_value=ser.max_value,
+                                    color_id=cfa)
+            else:
+                rgb = np.stack(ser.planes(fi), axis=0)
             rgb = np.moveaxis(rgb, 0, -1)          # (3,H,W) -> (H,W,3)
 
             if mode == "preview":
@@ -69,7 +74,7 @@ def export_frames(src, start, count, stride=1, out_dir=".", prefix="frame",
                 if hi > lo:
                     rgb = (rgb - lo) / (hi - lo)
                 rgb = rgb ** np.float32(PREVIEW_GAMMA)
-                rgb = resample(rgb, PREVIEW_WIDTH / ser.raw_width, "mitchell")
+                rgb = resample(rgb, PREVIEW_WIDTH / rgb.shape[1], "mitchell")
                 path = f"{out_dir}/{prefix}_{fi:05d}.png"
                 write_png(path, np.clip(rgb, 0.0, 1.0), bit_depth=8)
             else:
