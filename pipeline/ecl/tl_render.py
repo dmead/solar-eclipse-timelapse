@@ -162,6 +162,7 @@ def tune(out_dir, log=None):
     """Resolve the render constants from the config against the survey."""
     global DRIZZLE, MAX_GROUP_SHIFT_PX, GAMMA, SHOULDER_KNEE, SHOULDER_CEIL
     global PEDESTAL_PCT, PEDESTAL_FRAC, GAIN_JUMP, GAP_FRAMES, PANEL_EXPOSE
+    global PANEL_EXPOSE_STRENGTH, OCCLUDE_LEADERS
     global GROUP_LEVEL_TOL
     global PANEL_EXPOSE_PCT, PANEL_EXPOSE_TARGET, DEFAULT_ENGINE
     from .params import load
@@ -177,6 +178,9 @@ def tune(out_dir, log=None):
     GAIN_JUMP = P.get("render.gain_jump", GAIN_JUMP)
     GAP_FRAMES = P.get("render.gap_frames", GAP_FRAMES)
     GROUP_LEVEL_TOL = P.get("render.group_level_tol", GROUP_LEVEL_TOL)
+    PANEL_EXPOSE_STRENGTH = P.get("panels.expose_strength",
+                                  PANEL_EXPOSE_STRENGTH)
+    OCCLUDE_LEADERS = P.get("panels.occlude_leaders", OCCLUDE_LEADERS)
     PANEL_EXPOSE = P.get("panels.expose", PANEL_EXPOSE)
     PANEL_EXPOSE_PCT = P.get("panels.expose_pct", PANEL_EXPOSE_PCT)
     PANEL_EXPOSE_TARGET = P.get("panels.expose_target", PANEL_EXPOSE_TARGET)
@@ -302,15 +306,42 @@ def sky_pedestal(plane):
 PANEL_EXPOSE = True
 PANEL_EXPOSE_PCT = 99.5
 PANEL_EXPOSE_TARGET = 0.85
+# How far a panel is exposed toward its own subject, 0 to 1, in log space.
+#
+# 1.0 exposes fully for the subject and is what shipped: the corona inside a
+# panel rendered nine times darker than the same corona outside it. 0.0 leaves
+# the frame's exposure, which blows the subject out. Chosen by rendering the
+# same frame across the range and looking at it.
+PANEL_EXPOSE_STRENGTH = 0.55
+
+# Hide the part of a leader that crosses the Moon's disc.
+#
+# Off: the Moon is dark and there is nothing behind the line to lose, and the
+# lunar-limb panel's leader is almost entirely inside the disc - occluded, it is
+# two strokes ending in blank sky. Worth turning on for a subject whose disc
+# carries detail.
+OCCLUDE_LEADERS = False
 
 
 def panel_gain(samples, gain, pedestals=None):
-    """Gain for one panel: the frame's, reduced until the subject fits.
+    """Gain for one panel: the frame's, reduced PART of the way to its subject.
 
     Measured across all three channels at once, so a panel is not white-balanced
     by accident — the prominences are almost pure R and scaling that channel on
     its own would drain the colour out of exactly the feature the panel exists to
     show.
+
+    The reduction is partial because a full one is linear, and a linear reduction
+    cannot separate the subject from its surroundings: bringing a highlight ten
+    times over the ceiling down to the target brings the corona around it down
+    ten times as well. Measured at seq 1000, corona inside a panel rendered at 24
+    of 255 against 227 for the same corona outside it — the panel read as a
+    different photograph rather than a magnifier of this one.
+
+    Both ends are wrong. At strength 1 the panel is dark; at 0 it is the frame's
+    own exposure, which is what blew the subject out and the reason any of this
+    exists. So the step is taken in LOG space, where "halfway between two
+    exposures" is the thing that means what it sounds like.
     """
     if not PANEL_EXPOSE:
         return gain
@@ -320,7 +351,12 @@ def panel_gain(samples, gain, pedestals=None):
         hi = max(hi, float(np.percentile(s, PANEL_EXPOSE_PCT)) - ped)
     if hi <= 0:
         return gain
-    return min(gain, PANEL_EXPOSE_TARGET / hi)
+    full = PANEL_EXPOSE_TARGET / hi
+    if full >= gain:
+        return gain
+    if PANEL_EXPOSE_STRENGTH >= 1.0:
+        return full
+    return gain * (full / gain) ** PANEL_EXPOSE_STRENGTH
 
 
 def crop_gain(src, ox, oy, out_w, out_h, gain, pedestal=0.0):
@@ -379,19 +415,19 @@ class _Canvas:
     def line(self, x0, y0, x1, y1, occlude=None):
         """Draw a line, optionally skipping the part inside a circle.
 
-        `occlude` is (cx, cy, r). A leader whose subject is on the far side of
-        the disc has to be drawn across it, and there is no way to choose corners
-        out of that: measured over the whole cut, every frame with two or more
-        panels has NO crossing-free assignment, because the features sit ON the
-        limb and the corners are outside it. The worst leader ran 1123 px over a
-        disc 1168 px across - the full diameter.
+        `occlude` is (cx, cy, r), and is normally None. It once defaulted on: a
+        leader whose subject is on the far side of the disc has to be drawn
+        across it, and skipping the covered span made the line read as passing
+        BEHIND the Moon, which is where it is.
 
-        Skipping the covered span makes the line read as passing behind the Moon,
-        which is where it is. That is also true of the picture: the disc is the
-        nearest object in the frame, so a hairline crossing it is the only part of
-        this annotation that contradicts the scene. It is the darkest region too,
-        which is why a line there is far more visible than the same line over
-        corona.
+        That is true and it breaks the annotation. The lunar-limb panel points at
+        a feature on the disc's own edge, so nearly all of its leader falls
+        inside the circle; what is left is two short strokes ending in blank sky,
+        pointing at nothing. Being physically honest about an occlusion is worth
+        less than being readable, and the Moon is the one part of the frame with
+        no detail to hide behind it.
+
+        Kept because the argument holds on a frame where the disc is lit.
         """
         n = int(math.ceil(max(abs(x1 - x0), abs(y1 - y0))))
         if n <= 0:
@@ -540,7 +576,8 @@ def draw_insets(out_planes, fine, ox2, oy2, insets, panel, zoom,
         spx = px + panel - 1 if panel_left else px
         # The framed disc is always dead centre of the output: the crop is
         # built around the same cx/cy the disc track carries.
-        occ = (out_w2 / 2, out_h2 / 2, DRIZZLE * disc_r) if disc_r else None
+        occ = ((out_w2 / 2, out_h2 / 2, DRIZZLE * disc_r)
+               if disc_r and OCCLUDE_LEADERS else None)
         cv.line(sbx, by0, spx, py, occlude=occ)
         cv.line(sbx, by1, spx, py + panel - 1, occlude=occ)
 
