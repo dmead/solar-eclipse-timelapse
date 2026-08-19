@@ -68,6 +68,11 @@ DEFAULTS = {
         "gain_jump": 3.0,
         "gap_frames": 60,
         "dissolve": 3,
+        # Fractional change in a raw frame's mean level that drops it from its
+        # stacking group. Guards against a segment boundary that lands a few
+        # frames after the exposure actually changed. Within a group the level
+        # moves 0.5%; the smallest exposure step between segments here is 39%.
+        "group_level_tol": 0.08,
         # Largest intra-group alignment shift believed, in radii. 4 px at r=279.
         "max_group_shift_r": 0.0143,
         "engine": "ported",
@@ -161,6 +166,7 @@ _COMMENTS = {
     "render.workers": "0 = auto (physical cores, capped by free memory)",
     "render.max_group_shift_r": "largest believable intra-group shift, in radii",
     "render.engine": "'ported' or 'skimage' phase correlator",
+    "render.group_level_tol": "level change that drops a raw frame from its stacking group",
     "panels.size_frac": "panel edge as a fraction of the output short side",
     "panels.min_clear_r": "smallest panel-to-disc gap, in radii; slots tighter than this are dropped",
     "panels.clear_weight": "leader px paid per px of extra clearance - the corner preference",
