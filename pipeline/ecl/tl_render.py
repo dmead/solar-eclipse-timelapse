@@ -839,9 +839,35 @@ def main(argv=None):
     for k in _THREAD_ENV:
         os.environ[k] = "1"
 
+    """
+    Shards must be contiguous IN THE VIDEO, not merely in the list.
+
+    --resume drops the frames already on disk, and what is left is 24 separate
+    runs - a kill leaves a gap at the end of every shard. Slicing that compacted
+    list into equal pieces puts a join inside a shard, and the renderer's own
+    discontinuity test then fires on it (different file, or an index gap over
+    GAP_FRAMES) and starts a cross-dissolve against the previously rendered
+    frame, which at a join belongs to a different part of the video.
+
+    Measured on the cut that shipped: seq 177 came out 11.7% brighter than a clean
+    render of the same frame, 7.3% at 178, exact at 179 - a ghost of another frame
+    decaying over exactly the dissolve length, which on screen reads as the Moon's
+    limb stepping backwards.
+
+    So a boundary is placed at every discontinuity as well as at every step. That
+    can leave more jobs than workers, which is fine - the pool queues them - and
+    it changes nothing for a full render, where there are no discontinuities.
+    """
     step = math.ceil(n / args.workers)
-    jobs = [(cfg, a, min(a + step, n), args.engine) for a in range(0, n, step)]
-    print(f"rendering {n} frames in {len(jobs)} shards on {args.workers} workers")
+    fs = cfg["frames"]
+    cuts = {0, n}
+    cuts.update(range(0, n, step))
+    cuts.update(i for i in range(1, n) if fs[i]["seq"] != fs[i - 1]["seq"] + 1)
+    edges = sorted(cuts)
+    jobs = [(cfg, a, b, args.engine) for a, b in zip(edges, edges[1:]) if b > a]
+    runs = 1 + sum(1 for i in range(1, n) if fs[i]["seq"] != fs[i - 1]["seq"] + 1)
+    print(f"rendering {n} frames in {len(jobs)} shards on {args.workers} workers"
+          + (f" ({runs} contiguous runs)" if runs > 1 else ""))
     t0 = time.time()
     cpus, slot = [], None
     if args.affinity:
