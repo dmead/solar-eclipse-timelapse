@@ -4,46 +4,55 @@
 are kept as written; where one names a file that has since moved, the rebuild
 commands at the end of this document are the current truth.*
 
-## 2026-08-20 — drizzle 1 against drizzle 2, measured at last
+## 2026-08-20 — drizzle 1 against drizzle 2, measured on the features
 
 Now that `render.drizzle` reaches the workers it can be varied, so the claim in
 NOTES — that the 2x2 superpixel demosaic undersamples by 2x and "recovering it
 costs one render pass" — is finally testable. Same published config, insets
 re-planned at each drizzle (panel 225 px at 1, 450 at 2), then rendered with the
-panels stripped entirely, because they are drawn content at a different size in
-each render and any sharpness metric over them measures boxes and label plates.
-That is exactly how the first attempt went wrong.
+panels stripped, because they are drawn content at a different size in each
+render and any sharpness metric over them measures boxes and label plates.
 
-**No benefit could be demonstrated in the rendered output.**
+**Drizzle 2 does recover detail, and it is visible on the features.** Measured as
+the share of power above the drizzle-1 Nyquist, drizzle 2 native against drizzle
+1 upscaled with Lanczos — a resampler cannot invent signal above the source
+Nyquist, so anything up there is real:
 
-| test | drizzle 2 vs drizzle 1 |
-|---|---|
-| mean grad on the limb annulus, both at 1200x900 | 1.020x |
-| power above the drizzle-1 Nyquist, totality | 2.33x of ~1e-6 of total |
-| power above the drizzle-1 Nyquist, partial phases | 1.19x of ~1e-6 of total |
-| 1:1 crop of the limb, by eye | indistinguishable; slightly more grain at 2 |
+| patch | 25-50% | 50-75% | 75-100% | above Nyquist |
+|---|---|---|---|---|
+| prominence, 128 px | 1.18x | 1.60x | **2.14x** | 1.81x |
+| sunspot, 128 px | 1.10x | 1.29x | **1.41x** | 1.34x |
 
-The ratios above the Nyquist favour drizzle 2, and interpolation cannot invent
-signal up there, so something real is present. But it is a millionth of the
-frame's power and it does not read as structure — it reads as grain.
+The monotonic rise with frequency is the part that matters. Noise would sit flat
+across the bands and interpolation ringing would favour drizzle 1; an advantage
+that grows as the structure gets finer is what recovered detail looks like. At
+4:1 the prominence knot is cleanly separated in the drizzled version and mushy in
+the interpolated one.
 
-**Do not conclude drizzle is useless from this.** The measurement is made on
-8-bit stretched PNG output, which is the wrong place to look for low-contrast
-fine detail: quantisation at 1/255 plausibly floors exactly the signal in
-question, and the highlight shoulder compresses the bright limb where the
-sharpest edges are. The sampling argument in NOTES is about LINEAR data at the
-sensor, and this test cannot see that far back. Settling it properly needs the
-comparison run on 16-bit or float output before the stretch.
+**WHERE YOU MEASURE DECIDES THE ANSWER.** The first pass at this reported no
+benefit, from 1024x1024 crops in which 99.999% of the power sat below a quarter
+of Nyquist: the corona's smooth gradient swamped the very signal being looked
+for, and the supra-Nyquist energy came out at 1e-6 of the total. Moving to
+128 px patches on the sunspot and the prominences — the only genuinely fine
+structure in this data, and already located per frame by the panel planner —
+raised it a hundredfold and turned a null into a clear result. The features were
+`insets` all along; nothing needed detecting.
 
-What this does establish, and what it was for: drizzle 2 is not DEGRADING the
-picture — at matched resolution the two agree to 2% — so the cost is 4x the
-pixels and about 1.7x the render time (1.0 min against 0.6 for 24 frames) for a
-benefit that is real in the spectrum and invisible on screen.
+At MATCHED resolution the two agree to 2% (mean |grad| on the limb annulus,
+drizzle 2 area-averaged down to 1200x900), so drizzle is not degrading anything
+either. The cost is 4x the pixels and about 1.7x the render time — 1.0 min
+against 0.6 for 24 frames.
 
-Three failed measurements preceded the working one, all for the same reason:
-they depended on locating the limb, and a disc centre estimated from a rendered
-frame disagreed by 21 px between the two renders — enough to smear any edge
-metric past usefulness. The frequency-domain test needs no centre.
+One caveat left standing: this is measured on 8-bit stretched output, so it is a
+lower bound. Quantisation at 1/255 and the highlight shoulder both work against
+fine low-contrast detail, and the sampling argument in NOTES is about linear data
+at the sensor. The real margin is at least this large.
+
+Three failed measurements preceded the working one, all for the same reason: they
+depended on locating the limb, and a disc centre estimated from a rendered frame
+disagreed by 21 px between the two renders — enough to smear an edge metric into
+a 93 px "edge width" and then a 0.1 px one. The frequency-domain test needs no
+centre.
 
 ## 2026-08-20 — full re-run on the real data, against the published one
 
