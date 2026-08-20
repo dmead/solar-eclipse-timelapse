@@ -316,7 +316,13 @@ def best_sunspot(partials, r_sun, n_try):
     for f in partials[::step]:
         try:
             ox, oy, depth = find_sunspot(f, f["cx"], f["cy"], r_sun)
-        except Exception:
+        except Exception as e:
+            # A frame the search cannot use is normal and expected - a thin
+            # crescent has almost no photosphere to look at. Say so anyway: a
+            # real bug in find_sunspot otherwise reports itself as "no sunspot
+            # in this data", which is a conclusion rather than a failure.
+            print("  sunspot search skipped %s f%d: %s"
+                  % (f["file"], f["index"], e))
             continue
         if best is None or depth < best[2]:
             best = (ox, oy, depth, f)

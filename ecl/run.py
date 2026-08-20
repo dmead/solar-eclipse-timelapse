@@ -74,6 +74,28 @@ def preflight(log=print):
         raise SystemExit(1)
 
 
+def unbuffer():
+    """Make this run readable when it is piped to a file.
+
+    Python block-buffers stdout when it is not a terminal, and a long render is
+    always watched through a file or a pipe. The parent's progress lines then
+    land thousands of characters after the child stderr they were meant to
+    introduce: a failing pass shows its traceback ABOVE the header naming the
+    pass, and above the `data/out/frames` banner printed before anything ran.
+    The error was never lost, but it reads as though the run died without
+    saying anything.
+
+    Line-buffering this process and unbuffering the children puts the log back
+    in the order the events happened.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(line_buffering=True)
+        except (AttributeError, ValueError):
+            pass
+    os.environ["PYTHONUNBUFFERED"] = "1"
+
+
 def _run(mod, args, log):
     """Run one pass as `python -m <module>`, in its own process.
 
@@ -89,8 +111,19 @@ def _run(mod, args, log):
     """
     cmd = [sys.executable, "-m", mod] + [str(a) for a in args]
     log("    " + " ".join(cmd[1:]))
-    if subprocess.run(cmd).returncode != 0:
-        raise SystemExit(f"pass failed: {mod}")
+    sys.stdout.flush()
+    rc = subprocess.run(cmd).returncode
+    sys.stdout.flush()
+    if rc != 0:
+        # Name the command as well as the pass. A pass fails inside a
+        # subprocess, so the traceback above belongs to a different process and
+        # nothing else in the log connects the two.
+        raise SystemExit(
+            f"\npass failed: {mod} (exit {rc})\n"
+            f"  the traceback above is from this command:\n"
+            f"    {' '.join(cmd[1:])}\n"
+            f"  re-run it on its own to see it without the other passes "
+            f"interleaved.")
 
 
 def main(argv=None):
@@ -131,6 +164,7 @@ def main(argv=None):
             raise SystemExit(f"unknown pass {args.start!r}; known: {names}")
         want = names[names.index(args.start):]
 
+    unbuffer()
     preflight()
 
     t0 = time.time()
