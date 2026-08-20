@@ -295,7 +295,9 @@ def main():
     # Frames land on an SSD, not on S:. S: is a spinning SATA HDD at 117 MB/s and
     # a render already reads 551 GB off it; writing 1660 PNGs back to the same
     # head makes it seek between the read and write zones on every frame.
-    ap.add_argument("--frames-dir", default="D:/eclipse-work/tl")
+    ap.add_argument("--frames-dir", default=paths.in_out("frames"),
+                    help="where rendered PNGs go; recorded in the config "
+                         "as outDir so later stages agree")
     args = ap.parse_args()
     tune(args.out, log=print)
 

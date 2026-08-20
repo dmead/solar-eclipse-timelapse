@@ -104,6 +104,21 @@ python -m ecl.run "D:\eclipse\data"               # the whole thing
 Outputs go to `D:\eclipse\out` by default — beside the data, not inside it, so a
 read-only or network data folder works. Override with `--out` and `--frames`.
 
+Running a single stage by hand takes its defaults from the environment rather
+than from any particular drive:
+
+```powershell
+$env:ECLIPSE_DATA = "D:\eclipse\data"     # the captures
+$env:ECLIPSE_OUT  = "D:\eclipse\out"      # survey.json, configs\, diag\
+
+python -m ecl.progress            # no arguments needed
+python -m ecl.beadwindow
+```
+
+`ecl.run` never reads those — it works both out from the data directory you give
+it — so they only matter for running a stage on its own.
+
+
 Watch a long render from another window:
 
 ```powershell
