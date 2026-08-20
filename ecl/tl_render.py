@@ -1,0 +1,1146 @@
+"""Render timelapse frames — port of tl-frames.js.
+
+Demosaic, drizzle each group onto a 2x grid, hold the Sun still, apply the
+per-frame gain chosen by `gen_timelapse.py`, draw the zoom panels, write 8-bit
+PNGs for ffmpeg.
+
+Demosaic is 2x2 superpixel, which lands exactly on 1920x1080 from this sensor and
+costs no interpolation. Every frame is then rendered on a 2x grid — the sensor's
+own sampling, not the superpixel grid the disc fits are measured on. For a frame
+carrying a `stack` count that grid is filled by drizzle: N consecutive raw frames,
+phase-correlated against the first and added onto the fine grid, so the sub-pixel
+dither the mount supplied recovers detail past the native sampling.
+
+That matters for the prominences specifically. They are Halpha, so they live
+almost entirely in R, and R is only a quarter of the CFA sites — sampled at
+3.43 arcsec/px, the worst-sampled signal in the capture. Drizzle is the only thing
+that recovers it; a better demosaic cannot, because R is not interpolated away,
+it is genuinely that sparse.
+
+PixInsight supplied two things here and lunation supplies both: the FFT
+(`core.fftreg.PhaseCorrelator` for `FFTTranslation`) and the bicubic
+resample/translate that IS the drizzle kernel (`core.warp`). Note that PI's
+BicubicSpline is not cv2's Keys a=-0.75 kernel, so drizzled output will not match
+the PJSR render pixel for pixel — see `warp.py:27-28`. Everything else is
+arithmetic that was always in plain JS.
+
+WORKER COUNT: scale it to the physical cores. The cliff that used to be here is
+gone, and it was never really about the worker count.
+
+The old default was 4, from a 2026-08-15 measurement in which 12 workers ran
+twenty times SLOWER than one. That was two faults at once and both are fixed: the
+captures were on S:, a spinning disc whose readahead concurrent streams shredded,
+and `scipy.fft` was unpinned, so every worker fanned its FFT across all 32 cores
+— 4 workers meant 128 threads on 32 cores. With the source staged on Z: and the
+pinning in `_init_worker`, re-measured 2026-08-18 on an i9-14900K (8 P-cores +
+16 E-cores, 24 physical, 192 GB):
+
+    workers      8      12      16      20      24      32
+    s/frame  1.235   1.029   0.891   0.820   0.780   0.749
+    vs 8      1.00    1.20    1.39    1.51    1.58    1.65
+
+Monotonic throughout — no collapse anywhere. That run was fully cached, so it
+measured CPU only; the I/O-heavy case was checked separately on the corona dwell,
+291 distinct raw frames with nothing re-read, halves swapped between the arms:
+
+    8 workers  1.305 s/frame     24 workers  0.796 s/frame     1.64x
+
+and cold-against-cold alone is 1.71x, so more workers help on both axes here.
+Returns flatten past 24, the physical core count — past it only SMT siblings are
+left, and 32 buys 4% for a third more processes.
+
+So the default is the physical core count rather than a constant; on this box
+that is 24. RE-MEASURE ON A SPINNING DISC. Nothing here rules out the original
+collapse returning on hardware whose readahead cannot take 24 streams.
+"""
+
+import argparse
+import json
+import math
+import os
+import time
+
+import numpy as np
+from .vendor.core.fftreg import PhaseCorrelator
+from .vendor.core.warp import resample, translate
+
+from . import affinity, font5x7, serio
+from .imgio import write_png
+from .source import open_source
+from . import paths
+
+# Drizzle scale. Everything is rendered at 2x so the drizzled totality can sit in
+# the same sequence as the resampled partials with one geometry throughout.
+DRIZZLE = 2
+INTERP = "bicubic"
+
+# A group spans 0.86 s, over which the measured pointing moves under 1 px. A shift
+# far beyond that is a failed correlation, not motion, and the frame is left out
+# rather than smeared into the stack.
+MAX_GROUP_SHIFT_PX = 4.0
+
+# Display gamma applied after the linear gain.
+GAMMA = 0.65
+
+# Fraction of brightest pixels whose centroid defines the Sun's position, used
+# only when the config carries no smoothed centre for the frame.
+CENTROID_FRACTION = 0.02
+
+# Highlight shoulder. The gain maps each segment's p99 to a fixed target, but p99
+# is not the peak: on a nearly full disc the photosphere covers enough of the
+# frame that p99 sits INSIDE it and the brighter centre hard-clips. Measured in
+# the render, 13% of the first frame was pinned at 254+ while the source frames
+# clip nothing — the flat white disc was manufactured in this stage.
+SHOULDER_KNEE = 0.60
+# Ceiling the shoulder approaches, deliberately below 1.0: asymptoting TO white
+# still renders 255 for anything far enough over the knee. At 0.965 the brightest
+# possible pixel lands at 249 after the display gamma.
+SHOULDER_CEIL = 0.965
+
+# Input level mapped to the ceiling - how far above the knee the curve still
+# separates anything.
+#
+# The old shoulder was a tanh whose scale was the output range it had left, so it
+# ran out about 2.65 spans above the knee: at SHOULDER_KNEE 0.60 that is v = 1.57.
+# Measured on the totality prominence exposure, the limb annulus runs from v =
+# 0.43 at its median to v = 23.5 at p99.9 - 5.8 stops - so 8.1% of it rendered as
+# a single grey, which is the white blob the panels were showing structure in.
+#
+# Safe to widen because of where the corona is: v = 0.030, twenty times below the
+# knee. Everything this changes is currently one flat value.
+# Swept on the bead limb and on the totality chromosphere, and looked at:
+#
+#   shoulder_max   1.6    3.0    6.0   12.0   24.0
+#   over 240      10.9%   4.8%   2.6%   2.1%   1.7%   of the bead limb
+#   grain rms      3.44   3.43   3.43   3.43   3.44
+#
+# The grain does not change - it was always there, and the old curve was
+# CLIPPING it away to white. So this is a choice about how much of the
+# chromosphere to show against how much of the bright glow to keep, and 24 gives
+# up too much: the limb goes flat and grey and reads as overstretched. At 3 the
+# chromosphere line and its prominences are distinguishable and the glow is
+# still there, with half the clipping the old curve had.
+SHOULDER_MAX = 3.0
+
+# Frame gap inside one capture that counts as a discontinuity.
+GAP_FRAMES = 60
+
+# Gain ratio between consecutive video frames that counts as a cut. Set above the
+# largest step the exposure ladder makes on its own inside a run (2.45x) so only
+# a genuine handover between normalizations triggers it.
+GAIN_JUMP = 3.0
+
+# Fractional change in a frame's mean level that disqualifies it from the group.
+#
+# The stacker takes N consecutive raw frames on the assumption that they share an
+# exposure, which Stage F guarantees by never letting a group cross a segment
+# boundary. That guarantee is only as good as the boundary: measured in
+# 14_00_16, the camera changed at raw index 948 and the segment ends at 953, so
+# the last group averaged eight frames at one level with five at +71% and was
+# then scaled by the pre-change gain. On screen, a 10% flash.
+#
+# The gap this threshold sits in is wide. Within a group the level moves 0.5% -
+# that is the Moon advancing and the seeing, over 0.86 s. The smallest exposure
+# step the operator made between adjacent segments is 39%. Anything from a few
+# percent to a quarter would do; 8% is in the middle of the log range.
+#
+# Whole-frame mean is the proxy rather than a percentile of the photosphere:
+# it costs a single pass, it is dominated by the lit crescent, and it does not
+# care where the crescent is.
+GROUP_LEVEL_TOL = 0.08
+
+# Percentile of the frame taken as the sky pedestal, subtracted before the gain,
+# and how much of it to remove. Set the fraction to 0 to render exactly the way
+# the PJSR original did.
+#
+# Swept on a totality and a partial frame, 2026-08-17, scoring sky black point
+# against the corona still present at 2 R:
+#
+#   pct  frac   sky p1   corona@2R   ratio
+#   5.0  0.00   0.0431      0.1529     3.5   (off — the original)
+#   5.0  0.50   0.0353      0.1451     4.1
+#   1.0  0.75   0.0314      0.1451     4.6
+#   1.0  1.00   0.0275      0.1412     5.1   <- chosen
+#
+# The 1st percentile beats the 5th: on a totality frame the corona fills enough
+# of the field that the 5th percentile sits inside real signal, so it removes
+# corona along with sky. At the 1st, full removal blackens the sky by 36% for an
+# 8% cost in the outer skirt.
+PEDESTAL_PCT = 1.0
+PEDESTAL_FRAC = 1.0
+
+# Correlator for the intra-group alignment. "ported" is the literal fftalign.jsh
+# port; "skimage" is an upsampled-DFT estimator accurate to ~0.01 px against the
+# ported engine's 0.75 px tolerance.
+#
+# "ported" wins here on both counts, measured 2026-08-15 over three frames:
+# 12.1 s against 21.5 s, and marginally closer to the PJSR render (52.2% of
+# pixels identical against 49.8%). skimage's accuracy comes from an upsampled-DFT
+# refinement that costs more than the padded square FFT it avoids, and this is
+# called 19 times per output frame rather than once. `tl_track` makes the
+# opposite choice for the opposite reason: there the correlation runs once per
+# frame and the quantity being measured is a 0.74 px RMS residual, which the
+# ported engine's tolerance cannot resolve.
+DEFAULT_ENGINE = "ported"
+
+
+def tune(out_dir, log=None):
+    """Resolve the render constants from the config against the survey."""
+    global DRIZZLE, MAX_GROUP_SHIFT_PX, GAMMA, SHOULDER_KNEE, SHOULDER_CEIL
+    global PEDESTAL_PCT, PEDESTAL_FRAC, GAIN_JUMP, GAP_FRAMES, PANEL_EXPOSE
+    global PANEL_EXPOSE_STRENGTH, OCCLUDE_LEADERS, SHOULDER_MAX
+    global GROUP_LEVEL_TOL
+    global PANEL_EXPOSE_PCT, PANEL_EXPOSE_TARGET, DEFAULT_ENGINE
+    from .params import load
+
+    P = load(out_dir, create=False)
+    DRIZZLE = int(P.get("render.drizzle") or DRIZZLE)
+    MAX_GROUP_SHIFT_PX = P.px("render.max_group_shift_r")
+    GAMMA = P.get("render.gamma", GAMMA)
+    SHOULDER_KNEE = P.get("render.shoulder_knee", SHOULDER_KNEE)
+    SHOULDER_CEIL = P.get("render.shoulder_ceil", SHOULDER_CEIL)
+    PEDESTAL_PCT = P.get("render.pedestal_pct", PEDESTAL_PCT)
+    PEDESTAL_FRAC = P.get("render.pedestal_frac", PEDESTAL_FRAC)
+    GAIN_JUMP = P.get("render.gain_jump", GAIN_JUMP)
+    GAP_FRAMES = P.get("render.gap_frames", GAP_FRAMES)
+    GROUP_LEVEL_TOL = P.get("render.group_level_tol", GROUP_LEVEL_TOL)
+    PANEL_EXPOSE_STRENGTH = P.get("panels.expose_strength",
+                                  PANEL_EXPOSE_STRENGTH)
+    OCCLUDE_LEADERS = P.get("panels.occlude_leaders", OCCLUDE_LEADERS)
+    SHOULDER_MAX = P.get("render.shoulder_max", SHOULDER_MAX)
+    _SHOULDER_CACHE.clear()
+    PANEL_EXPOSE = P.get("panels.expose", PANEL_EXPOSE)
+    PANEL_EXPOSE_PCT = P.get("panels.expose_pct", PANEL_EXPOSE_PCT)
+    PANEL_EXPOSE_TARGET = P.get("panels.expose_target", PANEL_EXPOSE_TARGET)
+    DEFAULT_ENGINE = P.get("render.engine", DEFAULT_ENGINE)
+    if log:
+        log(f"  tuned to r={P.radius_px:.0f}px: drizzle x{DRIZZLE}, "
+            f"group shift <= {MAX_GROUP_SHIFT_PX:.1f} px")
+    return P
+
+
+def default_workers():
+    """Physical cores, which is where the throughput curve flattens.
+
+    Counted rather than hardcoded so this does not oversubscribe a smaller
+    machine, and falling back to the logical count wherever the topology query
+    does not work.
+    """
+    return len(affinity.core_groups()) or (os.cpu_count() or 4)
+
+
+__all__ = ["render_frames", "crop_gain", "accumulate", "centroid", "DEFAULT_ENGINE", "shard_spans"]
+
+
+# ------------------------------------------------------------------- drizzle
+
+def accumulate(plane, tx=0.0, ty=0.0, acc=None):
+    """Place one plane onto the fine grid, shifted by (tx, ty) plane pixels.
+
+    With translation-only alignment this is drizzle at pixfrac 1: upsample by the
+    scale factor, offset by scale*shift, add. The upsample is bicubic rather than
+    nearest because the dither here is a smooth drift, not a random walk — 20
+    frames land in only 8 or 9 of the 16 sub-pixel cells, and nearest-neighbour on
+    that leaves visible 2x2 stair-stepping in the cells nothing reached.
+    """
+    up = resample(plane, DRIZZLE, INTERP)
+    if tx or ty:
+        up = translate(up, DRIZZLE * tx, DRIZZLE * ty, interp=INTERP)
+    if acc is None:
+        return up
+    acc += up
+    return acc
+
+
+def centroid(g):
+    """Intensity-weighted centroid of the brightest pixels.
+
+    The partial crescent, or the corona once the filter is off — both are centred
+    on the Sun. Only a fallback: the smoothed disc track is used when present,
+    because per-frame detection jitters by a pixel or two and gives up entirely on
+    the thinnest crescents, either of which shows up as the picture twitching.
+    """
+    h, w = g.shape
+    lo, hi = float(g.min()), float(g.max())
+    bins = 1024
+    scale = (bins - 1) / (hi - lo) if hi > lo else 0.0
+    idx = np.rint((g - lo) * scale).astype(np.int32)
+    hist = np.bincount(idx.reshape(-1), minlength=bins)
+
+    want = max(1, int(round(CENTROID_FRACTION * g.size)))
+    acc, b = 0, bins - 1
+    while b > 0 and acc < want:
+        acc += int(hist[b])
+        b -= 1
+    thr = lo + b / (scale or 1.0)
+
+    d = g - thr
+    np.maximum(d, 0, out=d)
+    sw = float(d.sum())
+    if sw <= 0:
+        return w / 2.0, h / 2.0
+    ys, xs = np.arange(h), np.arange(w)
+    return float((d.sum(0) * xs).sum() / sw), float((d.sum(1) * ys).sum() / sw)
+
+
+def apply_gain(v, gain, pedestal=0.0):
+    """Sky pedestal, then linear gain, then the highlight shoulder, in place.
+
+    Shared by the main view and the inset panels so they cannot drift apart.
+    The panels used to skip this entirely — `draw_insets` samples the fine grid
+    for geometric reasons and that also bypassed the photometry, so a panel
+    showed raw linear data inside a frame multiplied by the segment gain. At
+    1.7x that reads as slightly off; at the 27x the long exposures use it reads
+    as a different picture.
+
+    The PEDESTAL is why the panels looked better. Totality sky is dusk, not
+    black, and that offset is additive — multiplying it by a 27x segment gain
+    turns a dark sky into a grey plate and takes the lunar disc with it. The
+    ungained panels never had that problem, which is what made their blacks
+    look right. Subtracting the pedestal before the gain gives the whole frame
+    the panels' contrast while keeping the per-segment normalisation that stops
+    the video flickering at exposure changes. `corona-stretch` removes the same
+    pedestal for the same reason, and in the same order.
+    """
+    if pedestal:
+        v -= np.float32(pedestal)
+    v *= np.float32(gain)
+    over = v > SHOULDER_KNEE
+    if over.any():
+        s, a = _shoulder_shape()
+        v[over] = SHOULDER_KNEE + a * np.log1p((v[over] - SHOULDER_KNEE) / s)
+        np.minimum(v, np.float32(SHOULDER_CEIL), out=v)
+    np.maximum(v, 0, out=v)
+    return v
+
+
+_SHOULDER_CACHE = {}
+
+
+def _shoulder_shape():
+    """(s, a) for the highlight curve, cached per parameter set.
+
+    `a` places SHOULDER_MAX on the ceiling; `s` is solved so the slope through
+    the knee is exactly 1, which is what keeps the curve C1 with the linear part
+    below it. Without that the join is visible as a band on a smooth gradient.
+
+        v' = K + a * log1p((v - K) / s)
+        a  = (C - K) / log1p((MAX - K) / s)
+        slope at K = a / s = 1   ->   s * log1p((MAX - K) / s) = C - K
+    """
+    key = (SHOULDER_KNEE, SHOULDER_CEIL, SHOULDER_MAX)
+    got = _SHOULDER_CACHE.get(key)
+    if got is not None:
+        return got
+    span = SHOULDER_CEIL - SHOULDER_KNEE
+    top = max(SHOULDER_MAX - SHOULDER_KNEE, 1e-6)
+    lo, hi = 1e-6, span
+    for _ in range(60):                       # s*log1p(top/s) rises with s
+        mid = 0.5 * (lo + hi)
+        if mid * math.log1p(top / mid) < span:
+            lo = mid
+        else:
+            hi = mid
+    s_ = 0.5 * (lo + hi)
+    a_ = span / math.log1p(top / s_)
+    got = (np.float32(s_), np.float32(a_))
+    _SHOULDER_CACHE[key] = got
+    return got
+
+
+def sky_pedestal(plane):
+    """The additive sky level of one plane, as a low percentile."""
+    if not PEDESTAL_FRAC:
+        return 0.0
+    return float(np.percentile(plane, PEDESTAL_PCT)) * PEDESTAL_FRAC
+
+
+# A panel is exposed for ITS OWN subject, never brighter than the frame gain.
+#
+# The frame gain normalizes the corona, and a panel inheriting it shows whatever
+# it is pointed at multiplied by a number chosen for something else. Around the
+# contacts that number reaches 27x while the panel is looking at photosphere, and
+# every panel in the frame renders as a flat white square.
+#
+# Pulling the gain down only ever helps where the sensor was not already clipped:
+# a saturated plateau goes from a white disc to a grey one and gains no detail,
+# which is why gen_insets also gates the bead panel on the arc being thin enough
+# to have structure left in it. The two work together and neither is sufficient.
+PANEL_EXPOSE = True
+PANEL_EXPOSE_PCT = 99.5
+PANEL_EXPOSE_TARGET = 0.85
+# How far a panel is exposed toward its own subject, 0 to 1, in log space.
+#
+# 1.0 exposes fully for the subject and is what shipped: the corona inside a
+# panel rendered nine times darker than the same corona outside it. 0.0 leaves
+# the frame's exposure, which blows the subject out. Chosen by rendering the
+# same frame across the range and looking at it.
+PANEL_EXPOSE_STRENGTH = 0.55
+
+# Hide the part of a leader that crosses the Moon's disc.
+#
+# Off: the Moon is dark and there is nothing behind the line to lose, and the
+# lunar-limb panel's leader is almost entirely inside the disc - occluded, it is
+# two strokes ending in blank sky. Worth turning on for a subject whose disc
+# carries detail.
+OCCLUDE_LEADERS = False
+
+
+def panel_gain(samples, gain, pedestals=None):
+    """Gain for one panel: the frame's, reduced PART of the way to its subject.
+
+    Measured across all three channels at once, so a panel is not white-balanced
+    by accident — the prominences are almost pure R and scaling that channel on
+    its own would drain the colour out of exactly the feature the panel exists to
+    show.
+
+    The reduction is partial because a full one is linear, and a linear reduction
+    cannot separate the subject from its surroundings: bringing a highlight ten
+    times over the ceiling down to the target brings the corona around it down
+    ten times as well. Measured at seq 1000, corona inside a panel rendered at 24
+    of 255 against 227 for the same corona outside it — the panel read as a
+    different photograph rather than a magnifier of this one.
+
+    Both ends are wrong. At strength 1 the panel is dark; at 0 it is the frame's
+    own exposure, which is what blew the subject out and the reason any of this
+    exists. So the step is taken in LOG space, where "halfway between two
+    exposures" is the thing that means what it sounds like.
+    """
+    if not PANEL_EXPOSE:
+        return gain
+    hi = 0.0
+    for c, s in enumerate(samples):
+        ped = pedestals[c] if pedestals else 0.0
+        hi = max(hi, float(np.percentile(s, PANEL_EXPOSE_PCT)) - ped)
+    if hi <= 0:
+        return gain
+    full = PANEL_EXPOSE_TARGET / hi
+    if full >= gain:
+        return gain
+    if PANEL_EXPOSE_STRENGTH >= 1.0:
+        return full
+    return gain * (full / gain) ** PANEL_EXPOSE_STRENGTH
+
+
+def crop_gain(src, ox, oy, out_w, out_h, gain, pedestal=0.0):
+    """Bilinear sub-pixel crop, linear gain and highlight shoulder in one pass.
+
+    Outside the sensor this leaves black. Clamping to the edge pixel would smear a
+    bright streak along the border and pretend it was data.
+    """
+    h, w = src.shape
+    dst = np.zeros((out_h, out_w), dtype=np.float32)
+
+    sy = oy + np.arange(out_h)
+    sx = ox + np.arange(out_w)
+    y0 = np.floor(sy).astype(np.int64)
+    x0 = np.floor(sx).astype(np.int64)
+    fy = (sy - y0).astype(np.float32)
+    fx = (sx - x0).astype(np.float32)
+
+    vy = (y0 >= 0) & (y0 + 1 < h)
+    vx = (x0 >= 0) & (x0 + 1 < w)
+    if not vy.any() or not vx.any():
+        return dst
+
+    yy, xx = y0[vy], x0[vx]
+    fyv, fxv = fy[vy][:, None], fx[vx][None, :]
+    a00 = src[np.ix_(yy, xx)]
+    a01 = src[np.ix_(yy, xx + 1)]
+    a10 = src[np.ix_(yy + 1, xx)]
+    a11 = src[np.ix_(yy + 1, xx + 1)]
+    a = a00 + (a01 - a00) * fxv
+    bq = a10 + (a11 - a10) * fxv
+    v = apply_gain(a + (bq - a) * fyv, gain, pedestal)
+
+    dst[np.ix_(np.nonzero(vy)[0], np.nonzero(vx)[0])] = v
+    return dst
+
+
+# --------------------------------------------------------------------- panels
+
+class _Canvas:
+    """The three output planes plus the primitives that draw on them."""
+
+    EDGE = 0.92          # line and border brightness
+
+    def __init__(self, planes):
+        self.planes = planes
+        self.h, self.w = planes[0].shape
+
+    def set_px(self, x, y, v):
+        x, y = int(x), int(y)
+        if x < 0 or y < 0 or x >= self.w or y >= self.h:
+            return
+        for p in self.planes:
+            p[y, x] = v
+
+    def line(self, x0, y0, x1, y1, occlude=None):
+        """Draw a line, optionally skipping the part inside a circle.
+
+        `occlude` is (cx, cy, r), and is normally None. It once defaulted on: a
+        leader whose subject is on the far side of the disc has to be drawn
+        across it, and skipping the covered span made the line read as passing
+        BEHIND the Moon, which is where it is.
+
+        That is true and it breaks the annotation. The lunar-limb panel points at
+        a feature on the disc's own edge, so nearly all of its leader falls
+        inside the circle; what is left is two short strokes ending in blank sky,
+        pointing at nothing. Being physically honest about an occlusion is worth
+        less than being readable, and the Moon is the one part of the frame with
+        no detail to hide behind it.
+
+        Kept because the argument holds on a frame where the disc is lit.
+        """
+        n = int(math.ceil(max(abs(x1 - x0), abs(y1 - y0))))
+        if n <= 0:
+            self.set_px(round(x0), round(y0), self.EDGE)
+            self.set_px(round(x0) + 1, round(y0), self.EDGE)
+            return
+        ocx = ocy = orr = None
+        if occlude:
+            ocx, ocy, orr = occlude
+            orr *= orr
+        for s in range(n + 1):
+            fx = x0 + (x1 - x0) * s / n
+            fy = y0 + (y1 - y0) * s / n
+            if orr is not None:
+                dx, dy = fx - ocx, fy - ocy
+                if dx * dx + dy * dy < orr:
+                    continue
+            x, y = math.floor(fx + 0.5), math.floor(fy + 0.5)
+            self.set_px(x, y, self.EDGE)
+            self.set_px(x + 1, y, self.EDGE)
+
+    def rect(self, x0, y0, x1, y1):
+        self.line(x0, y0, x1, y0)
+        self.line(x1, y0, x1, y1)
+        self.line(x1, y1, x0, y1)
+        self.line(x0, y1, x0, y0)
+
+    def text(self, s, x, y, z):
+        """Label on a darkened plate.
+
+        The plate MULTIPLIES rather than fills, which keeps it invisible against
+        the black sky where a solid box would be a grey rectangle, while still
+        carrying white text over the photosphere.
+        """
+        s = str(s).upper()
+        tw, th, pad = font5x7.text_width(s, z), 7 * z, 2 * z
+        x, y = int(x), int(y)
+
+        y0, y1 = max(0, y - pad), min(self.h, y + th + pad)
+        x0, x1 = max(0, x - pad), min(self.w, x + tw + pad)
+        if y1 > y0 and x1 > x0:
+            for p in self.planes:
+                p[y0:y1, x0:x1] *= 0.25
+
+        mask = font5x7.glyph_mask(s, z)
+        mh, mw = mask.shape
+        gy0, gy1 = max(0, y), min(self.h, y + mh)
+        gx0, gx1 = max(0, x), min(self.w, x + mw)
+        if gy1 <= gy0 or gx1 <= gx0:
+            return
+        sub = mask[gy0 - y:gy1 - y, gx0 - x:gx1 - x]
+        for p in self.planes:
+            p[gy0:gy1, gx0:gx1][sub] = self.EDGE
+
+
+def draw_insets(out_planes, fine, ox2, oy2, insets, panel, zoom,
+                gain=1.0, pedestals=None, disc_r=None):
+    """Zoomed panels in the corners, with a box and leader lines to the source.
+
+    The panels are sampled from the FINE grid rather than from the cropped output,
+    so a box near the edge of the crop still gets its full surroundings, and the
+    magnification is honest. Sampling is bilinear — nearest would show the drizzle
+    grid as stair-stepping at this magnification, which reads as detail that is
+    not there.
+
+    There is NOT always one panel per corner. Each inset names its own corner and
+    carries the name of the thing it follows, and `gen_insets.py` emits only the
+    features that exist in that frame: before first contact there are no cusps,
+    the sunspot spends part of the eclipse behind the Moon, and a totality level
+    may show fewer than four prominences worth pointing at.
+    """
+    M = 24                                   # margin from the frame edge
+    cv = _Canvas(out_planes)
+    out_h2, out_w2 = cv.h, cv.w
+    fh, fw = fine[0].shape
+    # Up to eight slots, in the order gen_insets assigns them: the four corners,
+    # then left, right, top, bottom. The last two exist only where the panel was
+    # sized to clear the disc; gen_insets decides that and simply never emits a
+    # corner index for them otherwise. See `corner_xy` there.
+    cx_mid, cy_mid = (out_w2 - panel) // 2, (out_h2 - panel) // 2
+    corners = [(M, M), (M, out_h2 - panel - M),
+               (out_w2 - panel - M, M),
+               (out_w2 - panel - M, out_h2 - panel - M),
+               (M, cy_mid), (out_w2 - panel - M, cy_mid),
+               (cx_mid, M), (cx_mid, out_h2 - panel - M)]
+
+    # However many the planner emitted, bounded by the slots that exist.
+    # This used to be a hard [:4] - a planner emitting six and a renderer
+    # drawing four loses two panels with nothing said.
+    for k, ins in enumerate(insets[:len(corners)]):
+        # Source centre: superpixel coordinates, same units as the disc track.
+        scx, scy = DRIZZLE * ins["cx"], DRIZZLE * ins["cy"]
+        px, py = corners[ins.get("corner", k)]
+        # Each inset may magnify at its own rate: a cusp is a needle and needs a
+        # much tighter box than a sunspot group or a prominence.
+        z = ins.get("zoom") or zoom
+        hb = panel / z / 2                   # half the source box, fine px
+
+        u = np.arange(panel)
+        sxs, sys = scx - hb + u / z, scy - hb + u / z
+        x0 = np.floor(sxs).astype(np.int64)
+        y0 = np.floor(sys).astype(np.int64)
+        fx = (sxs - x0).astype(np.float32)[None, :]
+        fy = (sys - y0).astype(np.float32)[:, None]
+        okx = (x0 >= 0) & (x0 + 1 < fw)
+        oky = (y0 >= 0) & (y0 + 1 < fh)
+
+        xc, yc = np.clip(x0, 0, fw - 2), np.clip(y0, 0, fh - 2)
+        keep = oky[:, None] & okx[None, :]
+        # Sample all three channels BEFORE gaining any of them: the exposure is a
+        # property of the panel as a whole and has to be measured across the set.
+        samples = []
+        for p in fine:
+            a00 = p[np.ix_(yc, xc)]
+            a01 = p[np.ix_(yc, xc + 1)]
+            a10 = p[np.ix_(yc + 1, xc)]
+            a11 = p[np.ix_(yc + 1, xc + 1)]
+            a = a00 + (a01 - a00) * fx
+            b = a10 + (a11 - a10) * fx
+            samples.append(np.where(keep, a + (b - a) * fy, 0.0).astype(np.float32))
+
+        # An inset may name its own exposure: a number scales the frame gain, and
+        # "auto" fits the gain to the panel's own content.
+        ex = ins.get("expose")
+        if ex == "auto" or (ex is None and PANEL_EXPOSE):
+            g = panel_gain(samples, gain, pedestals)
+        elif ex is not None:
+            g = gain * float(ex)
+        else:
+            g = gain
+
+        for c, v in enumerate(samples):
+            ped = pedestals[c] if pedestals else 0.0
+            out_planes[c][py:py + panel, px:px + panel] = apply_gain(v, g, ped)
+
+        # The source box, in output coordinates.
+        bx0, by0 = scx - hb - ox2, scy - hb - oy2
+        bx1, by1 = scx + hb - ox2, scy + hb - oy2
+        cv.rect(bx0, by0, bx1, by1)
+        cv.rect(px, py, px + panel - 1, py + panel - 1)
+
+        # Leader lines: join the two box corners on the side FACING the panel to
+        # the two panel corners facing the box. Choosing the near side per panel
+        # rather than a fixed pair is what stops the lines crossing the frame
+        # diagonally when a box drifts past the panel it belongs to — which the
+        # cusps do, since they travel right across the disc.
+        panel_left = (px + panel / 2) < (bx0 + bx1) / 2
+        sbx = bx0 if panel_left else bx1
+        spx = px + panel - 1 if panel_left else px
+        # The framed disc is always dead centre of the output: the crop is
+        # built around the same cx/cy the disc track carries.
+        occ = ((out_w2 / 2, out_h2 / 2, DRIZZLE * disc_r)
+               if disc_r and OCCLUDE_LEADERS else None)
+        cv.line(sbx, by0, spx, py, occlude=occ)
+        cv.line(sbx, by1, spx, py + panel - 1, occlude=occ)
+
+        # Name the subject, OUTSIDE the panel: below a top panel and above a
+        # bottom one, so it never covers the magnified view.
+        label = ins.get("label")
+        if label:
+            top = py < out_h2 / 2
+            z_t = font5x7.text_scale(str(label).upper(), panel)
+            tw = font5x7.text_width(str(label).upper(), z_t)
+            ty = py + panel + 3 * z_t if top else py - 7 * z_t - 3 * z_t
+            tx = px if (px + panel / 2 < out_w2 / 2) else px + panel - tw
+            cv.text(label, tx, ty, z_t)
+
+
+# ---------------------------------------------------------------- the render
+
+def render_frames(frames, cfg, engine=None, log=print):
+    """Render `frames` (a slice of timelapse.json's frames) to 8-bit PNGs."""
+    t0 = time.time()
+    engine = engine or cfg.get("correlator", DEFAULT_ENGINE)
+    out_dir = cfg["outDir"]
+    os.makedirs(out_dir, exist_ok=True)
+
+    out_w, out_h = cfg.get("outW", 1280), cfg.get("outH", 720)
+    out_w2, out_h2 = DRIZZLE * out_w, DRIZZLE * out_h
+    dissolve = cfg.get("dissolve", 3)
+    panel, zoom = cfg.get("insetPanel", 420), cfg.get("insetZoom", 3)
+    log(f"timelapse: {len(frames)} frames -> {out_dir}")
+    log(f"  output {out_w2}x{out_h2} (drizzle x{DRIZZLE}), dissolve {dissolve} "
+        f"frames, correlator {engine}")
+
+    ser = None
+    cur_path = ""
+    dissolve_file, dissolve_left, dissolve_src, prev_out = None, 0, None, None
+    dissolve_index = -1
+    dissolve_gain = None
+    written = 0
+    n_level_cut = 0
+
+    try:
+        for k, fr in enumerate(frames):
+            if fr["src"] != cur_path:
+                if ser is not None:
+                    ser.close()
+                ser = open_source(fr["src"])
+                cur_path = fr["src"]
+                log(f"  open {fr['file']} "
+                    f"({int(ser.raw_width * ser.plane_scale)}x"
+                    f"{int(ser.raw_height * ser.plane_scale)})")
+
+            R, G, B = ser.planes(fr["index"])
+
+            # Alignment is measured once, on G, and applied to all three channels.
+            # Per-channel alignment would let the colours drift apart by a
+            # fraction of a pixel, and G carries the most signal anyway.
+            #
+            # The reference is the group's FIRST frame, which is also the frame
+            # the disc track was measured on — so the stacked result sits exactly
+            # where the unstacked one would have, and stacked and unstacked frames
+            # can be mixed in one sequence without the subject stepping.
+            stack = int(fr.get("stack", 1) or 1)
+            if stack > 1:
+                aligner = PhaseCorrelator(use_gradient=False, engine=engine)
+                aligner.initialize(G)
+                acc = [accumulate(R), accumulate(G), accumulate(B)]
+                n_stack = 1
+                # The reference frame's level. A group is a set of frames that
+                # share an exposure; one that does not share it is not a member,
+                # however well it registers. See GROUP_LEVEL_TOL.
+                ref_level = float(G.mean())
+                for j in range(1, stack):
+                    idx = fr["index"] + j
+                    if idx >= ser.frame_count:
+                        break
+                    R2, G2, B2 = ser.planes(idx)
+                    if ref_level > 0 and abs(float(G2.mean()) / ref_level - 1.0) \
+                            > GROUP_LEVEL_TOL:
+                        # The operator changed the exposure inside this group.
+                        # Everything after it belongs to the next one.
+                        n_level_cut += stack - j
+                        break
+                    sh = aligner.evaluate(G2)
+                    dx, dy = ((sh["dx"], sh["dy"]) if isinstance(sh, dict) else sh)
+                    if abs(dx) > MAX_GROUP_SHIFT_PX or abs(dy) > MAX_GROUP_SHIFT_PX:
+                        continue
+                    for c, plane in enumerate((R2, G2, B2)):
+                        accumulate(plane, -dx, -dy, acc[c])
+                    n_stack += 1
+                fine = [a / n_stack for a in acc]
+            else:
+                fine = [accumulate(R), accumulate(G), accumulate(B)]
+
+            # Hold the Sun still. The centre comes from the smoothed disc track,
+            # not from this frame. The window is NOT clamped inside the sensor:
+            # clamping would keep the frame full at the cost of letting the Sun
+            # slide, which is the whole problem, and it also crops away corona the
+            # sensor did record. Where the window reaches past the edge the
+            # renderer pads black — the honest statement that nothing was there.
+            if fr.get("cx") is not None:
+                ox, oy = fr["cx"] - out_w / 2, fr["cy"] - out_h / 2
+            else:
+                ccx, ccy = centroid(G)
+                ox = min(max(ccx - out_w / 2, 0), G.shape[1] - out_w)
+                oy = min(max(ccy - out_h / 2, 0), G.shape[0] - out_h)
+
+            ox2, oy2 = DRIZZLE * ox, DRIZZLE * oy
+            # Measured per channel on the drizzled plane, so the panels and the
+            # main view subtract the same number.
+            peds = [sky_pedestal(f) for f in fine]
+            out_planes = [crop_gain(f, ox2, oy2, out_w2, out_h2, fr["gain"], p)
+                          for f, p in zip(fine, peds)]
+
+            # Cross-dissolve across a discontinuity. Within a capture successive
+            # video frames are 0.86 s apart and the Moon advances 0.24 px. At a
+            # boundary the recorder was flushing for 25 to 490 s, so the Moon
+            # jumps 7 to 136 px in a single frame and it reads as a jolt. Nothing
+            # can fill that gap; a short dissolve just stops the discontinuity
+            # landing on one frame. Any real-time gap counts, not just a change of
+            # file: dropping blown frames leaves holes of 8 to 13 s inside a
+            # capture, across which the Sun has moved just as much.
+            # A big GAIN step counts as a discontinuity too, even between two
+            # consecutive raw frames. Where the second-contact resolve hands over
+            # to the corona exposure the gain goes 4.19 to 27.31 across f1169 to
+            # f1170 - 43 ms apart, so the sky is identical and only the camera
+            # changed - and the rendered frame jumps 2.3x in mean. Normalization
+            # is meant to remove exactly that, and cannot here: the resolve is
+            # held down by the transition ceiling because its highlights are
+            # clipped. One frame of it in a fast sequence went unnoticed; arriving
+            # at the end of eight seconds of slow motion it reads as a flash.
+            g_prev = dissolve_gain or fr["gain"]
+            jumped = (fr["file"] != dissolve_file
+                      or fr["index"] - dissolve_index > GAP_FRAMES
+                      or max(fr["gain"], g_prev) / max(min(fr["gain"], g_prev), 1e-6)
+                      > GAIN_JUMP)
+            dissolve_gain = fr["gain"]
+            if jumped:
+                if dissolve_file is not None and prev_out is not None and dissolve > 0:
+                    dissolve_left, dissolve_src = dissolve, prev_out
+                dissolve_file = fr["file"]
+            dissolve_index = fr["index"]
+            if dissolve_left > 0 and dissolve_src is not None:
+                w_old = dissolve_left / (dissolve + 1)
+                for c in range(3):
+                    out_planes[c] *= (1 - w_old)
+                    out_planes[c] += dissolve_src[c] * w_old
+                dissolve_left -= 1
+
+            # Remember the main view WITHOUT the panels, then draw them.
+            # Cross-fading the panels turns their outlines and leader lines into
+            # doubled ghost lines for the length of the dissolve. The main view
+            # should dissolve; the annotation on top of it should not.
+            prev_out = [p.copy() for p in out_planes]
+
+            # The panels are drawn at FULL strength on every frame, always. Both
+            # cleverer schemes tried across a dissolve were worse: sliding a box
+            # between its old and new position samples the PANEL there too, so
+            # every zoom showed the wrong patch of sky while it drifted; fading
+            # the annotation on the dissolve weight reads as the corners flashing.
+            if fr.get("insets"):
+                draw_insets(out_planes, fine, ox2, oy2, fr["insets"], panel,
+                            zoom, gain=fr["gain"], pedestals=peds,
+                            disc_r=cfg.get("discR"))
+
+            rgb = np.stack(out_planes, axis=-1)
+            np.clip(rgb, 0.0, 1.0, out=rgb)
+            rgb **= np.float32(GAMMA)
+
+            # Number by the frame's own sequence when the driver supplied one:
+            # under parallel sharding a frame's position within its shard is not
+            # its position in the video.
+            seq = fr.get("seq", k)
+            # Warm-up frames are rendered for their dissolve state alone: a shard
+            # starting mid-video needs the previous frame's OUTPUT to cross-fade
+            # against, and the only way to have it is to have made it.
+            if fr.get("_warm"):
+                continue
+            write_png(f"{out_dir}/seq_{seq:05d}.png", rgb, bit_depth=8)
+            written += 1
+
+            if (k + 1) % 100 == 0:
+                log(f"  rendered {k + 1}/{len(frames)} "
+                    f"({(time.time() - t0) / (k + 1):.2f} s/frame)")
+    finally:
+        if ser is not None:
+            ser.close()
+
+    log(f"  {written} frames in {(time.time() - t0) / 60:.1f} min")
+    if n_level_cut:
+        log(f"  {n_level_cut} raw frame(s) left out of their group: the exposure "
+            f"changed before the segment did")
+    return written
+
+
+# Thread-limit variables the numeric libraries read AT IMPORT. They have to be
+# set in the PARENT before the pool spawns, because a spawned child imports numpy
+# and its BLAS afresh and reads them then — setting them inside the worker
+# function is too late and does nothing, which is the bug this replaces.
+_THREAD_ENV = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
+               "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")
+
+
+def _init_worker(cpus=None, slot=None):
+    """One thread per worker process, and optionally one core to run it on.
+
+    Three separate thread pools have to be pinned, and missing any one of them
+    oversubscribes the box:
+
+    - OpenCV, via `setNumThreads`, which does work at runtime.
+    - The BLAS behind numpy, via the environment above, which the parent sets.
+    - **scipy.fft**, which `PhaseCorrelator` calls with `workers=-1` and which is
+      55% of the per-frame cost. This is the one that was missed. Four workers
+      each fanning the FFT across 32 cores is 128 threads on 32 cores, and it is
+      the most likely reason more workers measured SLOWER than one.
+    """
+    import cv2
+
+    cv2.setNumThreads(1)
+
+    # Claim a core. The pool gives every worker the same initargs, so the slot is
+    # taken from a shared counter rather than passed in - there is no worker index
+    # to key on, and two workers on one core is worse than none pinned at all.
+    if cpus and slot is not None:
+        with slot.get_lock():
+            i = slot.value
+            slot.value += 1
+        if i < len(cpus):
+            affinity.pin(cpus[i])
+
+
+def _shard(args):
+    cfg, a, b, engine, warm = args
+    import scipy.fft
+
+    # set_workers is a context manager, so the limit has to wrap the work
+    # rather than be set once at import.
+    with scipy.fft.set_workers(1):
+        return render_frames(list(warm) + cfg["frames"][a:b], cfg,
+                             engine=engine, log=lambda m: None)
+
+
+def shard_spans(frames, workers):
+    """[start, end) spans for the worker pool, contiguous IN THE VIDEO.
+
+    --resume drops the frames already on disk, and what is left is many separate
+    runs - a kill leaves a gap at the end of every shard. Slicing that compacted
+    list into equal pieces puts a join inside a shard, and the renderer's own
+    discontinuity test then fires on it and cross-dissolves the new frame against
+    the previously rendered one, which at a join belongs to a different part of
+    the video. That shipped: seq 177 came out 11.7% brighter than a clean render
+    of the same frame, decaying over exactly the dissolve length, and read on
+    screen as the Moon's limb stepping backwards.
+
+    So a boundary is placed at every discontinuity in `seq` as well as at every
+    step. More jobs than workers is fine - the pool queues them - and a full
+    render has no discontinuities, so it is unaffected.
+    """
+    n = len(frames)
+    if n == 0:
+        return []
+    step = max(1, math.ceil(n / max(workers, 1)))
+    cuts = {0, n}
+    cuts.update(range(0, n, step))
+    cuts.update(i for i in range(1, n)
+                if frames[i]["seq"] != frames[i - 1]["seq"] + 1)
+    edges = sorted(cuts)
+    return [(a, b) for a, b in zip(edges, edges[1:]) if b > a]
+
+
+def sample_frames(frames, dissolve=3):
+    """A subset that shows every DISTINCT thing the video does.
+
+    Picked from structure rather than by stepping every Nth frame, because the
+    things worth looking at are not evenly spaced: a clip layout can last twenty
+    frames, and a cut is exactly one frame wide. Stepping would miss both and
+    still cost more.
+
+    Three kinds of frame:
+      * each distinct clip layout - same capture, same feature labels - at its
+        start and its middle, which is what shows panel placement and exposure;
+      * the neighbourhood of every cut, which is where dissolves live and where
+        the shard bugs kept landing;
+      * the first, middle and last of every dwell, which is where the dwells are
+        judged.
+    """
+    n = len(frames)
+    if not n:
+        return []
+    keep = set()
+
+    clips = {}
+    for i, f in enumerate(frames):
+        key = (f.get("file"), tuple(x.get("label") for x in (f.get("insets") or [])))
+        clips.setdefault(key, []).append(i)
+    for idxs in clips.values():
+        keep.add(idxs[0])
+        keep.add(idxs[len(idxs)//2])
+
+    pf, pi, pg = None, -1, None
+    for i, f in enumerate(frames):
+        g = f.get("gain") or 1.0
+        jumped = (f.get("file") != pf or f.get("index", 0) - pi > GAP_FRAMES
+                  or (pg and max(g/pg, pg/g) > GAIN_JUMP))
+        if jumped and pf is not None:
+            keep.update(range(max(0, i - 1), min(n, i + dissolve + 2)))
+        pf, pi, pg = f.get("file"), f.get("index", 0), g
+
+    for flag in ("resolve", "bead", "dense", "hold"):
+        idxs = [i for i, f in enumerate(frames) if f.get(flag)]
+        if idxs:
+            keep.update({idxs[0], idxs[len(idxs)//2], idxs[-1]})
+
+    return sorted(keep)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--config", default=paths.in_out("configs", "timelapse.json"))
+    ap.add_argument("--workers", type=int, default=default_workers(),
+                    help="contiguous shards rendered in parallel processes. "
+                         "Defaults to the physical core count, where the "
+                         "measured curve flattens; read the module docstring "
+                         "before changing it on other storage.")
+    ap.add_argument("--start", type=int, default=0,
+                    help="first frame index in the config to render")
+    ap.add_argument("--limit", type=int, default=None,
+                    help="render at most N frames from --start")
+    ap.add_argument("--out-dir", default=None, help="override cfg.outDir")
+    ap.add_argument("--data-dir", default=None,
+                    help="read the captures from here instead of the directory "
+                         "baked into the config's absolute frames[].src paths, "
+                         "so the source can be staged on a faster volume "
+                         "without rewriting timelapse.json")
+    ap.add_argument("--engine", default=None, choices=["skimage", "ported"],
+                    help="intra-group correlator (default skimage)")
+    ap.add_argument("--sample", action="store_true",
+                    help="render a representative subset into <out-dir>_sample "
+                         "for review; never touches the real frames")
+    ap.add_argument("--resume", action="store_true",
+                    help="skip frames already written as complete PNGs, so a "
+                         "killed render continues instead of starting over")
+    ap.add_argument("--affinity", action="store_true",
+                    help="pin each worker to its own performance core (hybrid "
+                         "CPUs; ignored when workers exceed the P-core count)")
+    args = ap.parse_args(argv)
+
+    # Resolve the scale-dependent constants before anything reads them. The
+    # config lives beside the timelapse config, one level up from configs/.
+    out_root = os.path.dirname(os.path.dirname(os.path.abspath(args.config)))
+    try:
+        tune(out_root, log=print)
+    except SystemExit:
+        print("  no survey/config found - using built-in defaults")
+
+    with open(args.config, encoding="utf-8-sig") as f:
+        cfg = json.load(f)
+    if args.out_dir:
+        cfg["outDir"] = args.out_dir
+    serio.restage(cfg, args.data_dir)
+    # Stamp the global sequence number before any slicing, so --start/--limit
+    # render the same numbered frames they would in a full run.
+    for i, fr in enumerate(cfg["frames"]):
+        fr.setdefault("seq", i)
+    # Kept whole: --resume drops frames from cfg["frames"], and a shard still
+    # needs the frames that came BEFORE it in the video to warm its dissolve.
+    all_frames = cfg["frames"]
+
+    if args.sample:
+        """
+        Into its own directory, always.
+
+        A sample frame sitting in the deliverable set is indistinguishable from
+        a real one, and --resume would skip it forever. Naming the directory
+        rather than trusting the caller to is the only version of this that
+        cannot go wrong.
+        """
+        picked = sample_frames(cfg["frames"], cfg.get("dissolve", 3))
+        cfg["outDir"] = cfg["outDir"].rstrip("/\\") + "_sample"
+        cfg["frames"] = [cfg["frames"][i] for i in picked]
+        print(f"sample: {len(picked)} of {len(all_frames)} frames "
+              f"({100.0*len(picked)/max(len(all_frames), 1):.0f}%) -> "
+              f"{cfg['outDir']}")
+
+    if args.resume:
+        """
+        Drop frames already on disk, but only COMPLETE ones.
+
+        A render killed mid-frame leaves a truncated PNG, and skipping that would
+        put a corrupt frame in the video with nothing to show it went wrong. The
+        last eight bytes of a PNG are its IEND chunk, so completeness is one
+        last eight bytes start with b'IEND' on any complete file, and checking
+        it is one seek rather than a decode.
+        """
+        keep, done = [], 0
+        for fr in cfg["frames"]:
+            p = f"{cfg['outDir']}/seq_{fr['seq']:05d}.png"
+            ok = False
+            try:
+                if os.path.getsize(p) > 8:
+                    with open(p, "rb") as fh:
+                        fh.seek(-8, os.SEEK_END)
+                        ok = fh.read(8)[:4] == b"IEND"
+            except OSError:
+                ok = False
+            if ok:
+                done += 1
+            else:
+                keep.append(fr)
+        print(f"resume: {done} frames already written, {len(keep)} to render")
+        cfg["frames"] = keep
+        if not keep:
+            print("nothing to do")
+            return
+    end = args.start + args.limit if args.limit else len(cfg["frames"])
+    cfg["frames"] = cfg["frames"][args.start:end]
+
+    # `seq` was stamped above, before slicing. Without it a frame's position
+    # within its shard would be taken as its position in the video and every
+    # shard would overwrite the others' output — the PJSR driver assigned `seq`
+    # for exactly this reason.
+    n = len(cfg["frames"])
+
+    # Contiguous shards: each keeps one SER open and its own dissolve state, the
+    # same trade the PJSR driver made. The launch mutex it needed is gone —
+    # that existed only for the PixInsight instance-slot race.
+    """
+    Shards must be contiguous IN THE VIDEO, not merely in the list.
+
+    --resume drops the frames already on disk, and what is left is 24 separate
+    runs - a kill leaves a gap at the end of every shard. Slicing that compacted
+    list into equal pieces puts a join inside a shard, and the renderer's own
+    discontinuity test then fires on it (different file, or an index gap over
+    GAP_FRAMES) and starts a cross-dissolve against the previously rendered
+    frame, which at a join belongs to a different part of the video.
+
+    Measured on the cut that shipped: seq 177 came out 11.7% brighter than a clean
+    render of the same frame, 7.3% at 178, exact at 179 - a ghost of another frame
+    decaying over exactly the dissolve length, which on screen reads as the Moon's
+    limb stepping backwards.
+
+    So a boundary is placed at every discontinuity as well as at every step. That
+    can leave more jobs than workers, which is fine - the pool queues them - and
+    it changes nothing for a full render, where there are no discontinuities.
+    """
+    spans = shard_spans(cfg["frames"], args.workers)
+    warm_n = cfg.get("dissolve", 3)
+    jobs = []
+    for a, b in spans:
+        # Frames immediately before this span IN THE VIDEO, from the uncompacted
+        # list: under --resume the frames before it in cfg["frames"] belong to
+        # the previous run and would reintroduce the ghost this replaced.
+        first = cfg["frames"][a]["seq"]
+        lo = max(0, first - warm_n)
+        warm = [dict(f, _warm=True) for f in all_frames[lo:first]]
+        jobs.append((cfg, a, b, args.engine, warm))
+    n_warm = sum(len(j[4]) for j in jobs)
+    runs = 1 + sum(1 for i in range(1, n)
+                   if cfg["frames"][i]["seq"] != cfg["frames"][i - 1]["seq"] + 1)
+    print(f"rendering {n} frames in {len(jobs)} shards on {args.workers} workers"
+          + (f" ({runs} contiguous runs)" if runs > 1 else "")
+          + (f", +{n_warm} warm-up frames for the dissolves" if n_warm else ""))
+    t0 = time.time()
+
+    if args.workers <= 1:
+        # Same spans, same warm-up, no pool. This path used to render
+        # cfg["frames"] straight through, which under --resume meant straight
+        # through the joins between runs - the ghost, in the path most likely to
+        # be used to reproduce a bug by hand.
+        total = 0
+        for j in jobs:
+            total += _shard(j)
+        print(f"{total} frames in {(time.time() - t0) / 60:.1f} min")
+        return
+
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    # Must happen before the pool is created: spawned children inherit this
+    # environment and read it while importing numpy.
+    for k in _THREAD_ENV:
+        os.environ[k] = "1"
+
+    cpus, slot = [], None
+    if args.affinity:
+        cpus = affinity.plan(args.workers)
+        if cpus:
+            slot = multiprocessing.Value("i", 0)
+            print(f"pinning workers to performance cores {cpus}")
+        else:
+            print("no distinct performance cores to pin to; leaving it to the OS")
+
+    with ProcessPoolExecutor(max_workers=args.workers,
+                             initializer=_init_worker,
+                             initargs=(cpus, slot)) as ex:
+        total = sum(ex.map(_shard, jobs))
+    print(f"{total} frames in {(time.time() - t0) / 60:.1f} min")
+
+
+if __name__ == "__main__":
+    main()

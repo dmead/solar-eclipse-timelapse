@@ -9,6 +9,16 @@
 __pycache__/
 *.pyc
 
-# Virtualenv (uv-managed; recreate with `uv sync` in pipeline/)
+# Virtualenv. uv.lock is COMMITTED, deliberately: without it nobody else
+# resolves the same dependency versions you did, and "works on my machine" is
+# the failure this repository is trying not to have.
 .venv/
-uv.lock
+
+# Build output
+/build/
+/dist/
+*.egg-info/
+
+# Test and tooling caches
+.pytest_cache/
+.ruff_cache/

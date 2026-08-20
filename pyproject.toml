@@ -1,0 +1,71 @@
+[project]
+name = "solar-eclipse-timelapse"
+version = "0.1.0"
+description = "Total solar eclipse processing pipeline: SER or image sequences to a tracked, annotated timelapse"
+readme = "README.md"
+requires-python = ">=3.11"   # tomllib
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "Daniel Mead" }]
+keywords = ["astronomy", "solar-eclipse", "astrophotography", "timelapse",
+            "lucky-imaging", "drizzle", "ser"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+
+# Everything below is on PyPI. The numeric spine - FFT registration, sub-pixel
+# warp, kappa-sigma combination, the drizzle stacker, SER memmap reads, XISF I/O
+# - is VENDORED in ecl/vendor/ rather than depended on, so a clone of this
+# repository installs and runs with nothing but these. See ecl/vendor/__init__.py
+# for provenance and how to re-sync.
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.11",
+    "opencv-python-headless>=4.10",
+    "scikit-image>=0.24",     # upsampled-DFT phase correlation
+    "pillow>=12.3.0",
+    "tifffile>=2024.1",       # 16-bit TIFF, read and write
+    "xisf>=0.9",              # PixInsight XISF, pure Python
+    "psutil>=5.9",            # memory/core survey
+]
+
+[project.optional-dependencies]
+raw = ["rawpy>=0.22"]      # camera RAW: CR2/CR3/NEF/ARW/DNG/RAF/ORF/RW2
+fits = ["astropy>=6.1"]    # FITS input and export
+
+[project.urls]
+Homepage = "https://github.com/dmead/solar-eclipse-timelapse"
+Source = "https://github.com/dmead/solar-eclipse-timelapse"
+Issues = "https://github.com/dmead/solar-eclipse-timelapse/issues"
+
+[project.scripts]
+eclipse-timelapse = "ecl.run:main"
+
+[dependency-groups]
+dev = ["pytest>=8.3"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# `ecl` and everything under it, which is the whole program. It listed only
+# `ecl` while five modules it imports sat beside the package as loose scripts,
+# so the built wheel was missing its own segmentation, planning, tracking and
+# panel stages, plus the SER header reader - importable in an editable checkout
+# and nowhere else. Nothing lives outside the package now; keep it that way.
+packages = ["ecl"]
+
+[tool.hatch.build.targets.sdist]
+include = ["ecl", "tests", "tools", "docs", "README.md", "LICENSE",
+           "pyproject.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
