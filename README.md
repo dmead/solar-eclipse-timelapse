@@ -18,18 +18,22 @@ python -m ecl.run "D:\eclipse\data"
 Everything else is surveyed from the data and the machine on startup, written to
 an editable config, and reused from then on.
 
-**The finished video is on the
-[v0.1.0 release](https://github.com/dmead/solar-eclipse-timelapse/releases/tag/v0.1.0)**
-— 2228 frames, 74 s at 30 fps, all 22 captures, in full resolution (108 MB), a
-1080-wide cut and a 2 MB preview. That frame above is one of its frames; nothing
-in it was placed by hand.
+Everything on this page — the frame above, the preview below, and the alignment
+comparison further down — comes from **one unmodified run of the command at the
+top of this README**, on the 2024-04-08 data: 2299 frames, 76.6 s at 30 fps, all
+22 captures. No flags, no hand-tuning, nothing placed by hand. The window,
+the panel size, the segments in the preview and the features every panel follows
+were all chosen by the pipeline from the data.
 
-`timelapse.gif` below is one of the pipeline's own outputs, not a still cut by
-hand: nine seconds assembled from four segments it picked out of the run — the
-crescent at its thinnest, the filter coming off, second contact, and totality.
-Each chapter is located from what the earlier passes marked, so data that is
-totality only gets three chapters over the same budget and nothing is
-special-cased.
+The full-resolution cut of the hand-graded version is on the
+[v0.1.0 release](https://github.com/dmead/solar-eclipse-timelapse/releases/tag/v0.1.0)
+(108 MB, plus a 1080-wide cut and a 2 MB preview).
+
+`timelapse.gif` below is a pipeline output too, not a clip chosen by hand: nine
+seconds assembled from four segments it picked out of the run — the crescent at
+its thinnest, the filter coming off, second contact, and totality. Each chapter
+is located from what the earlier passes marked, so data that is totality only
+gets three chapters over the same budget and nothing is special-cased.
 
 ![Preview: partial phases, the filter coming off, second contact, totality](docs/media/preview.gif)
 
@@ -42,9 +46,9 @@ sequence numbers is the same exposure at the same stack depth.
 
 ![No tracking versus the disc track, the same frames side by side](docs/media/alignment.gif)
 
-Over the 45 minutes the Sun travels **523 × 277 px in a 1200 × 900 window** —
-44% of the frame width, 1.8 solar radii — and at the extremes the disc runs 105
-px past the edge. Almost none of that is the mount losing the Sun: within any
+Over the 45 minutes the Sun travels **523 × 277 px in an 1180 × 880 window** —
+44% of the frame width, 1.8 solar radii — and at the extremes the disc runs past
+the edge. Almost none of that is the mount losing the Sun: within any
 one capture the drift is 20–49 px. It is the boundaries, where the mount was
 nudged by hand between captures, and three of those move the Sun 544, 387 and
 262 px in a single frame.
