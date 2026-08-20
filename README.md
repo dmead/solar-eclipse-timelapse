@@ -33,6 +33,30 @@ special-cased.
 
 ![Preview: partial phases, the filter coming off, second contact, totality](docs/media/preview.gif)
 
+## Holding the Sun still
+
+The same frames, through the same gains, cropped two ways. On the left the
+window never moves; on the right it follows the fitted disc track. Nothing else
+differs — the two configs are one file with one field changed, so every pair of
+sequence numbers is the same exposure at the same stack depth.
+
+![No tracking versus the disc track, the same frames side by side](docs/media/alignment.gif)
+
+Over the 45 minutes the Sun travels **523 × 277 px in a 1200 × 900 window** —
+44% of the frame width, 1.8 solar radii — and at the extremes the disc runs 105
+px past the edge. Almost none of that is the mount losing the Sun: within any
+one capture the drift is 20–49 px. It is the boundaries, where the mount was
+nudged by hand between captures, and three of those move the Sun 544, 387 and
+262 px in a single frame.
+
+This is also why the tracking is a fitted disc track rather than frame-to-frame
+correlation. Correlation locks onto the brightest thing in the frame, which
+during the partial phases is the crescent — and a crescent's centroid is not the
+centre of the disc it was cut from, so it slides around the limb as the Moon
+advances. `docs/NOTES.md` has the measurements.
+
+---
+
 Written for one shoot — the 2024-04-08 totality from Cleveland, an ASI585MC on a
 70 mm refractor — and then generalised. Every geometric constant is a fraction
 of the solar radius the survey measures, so the same config works on an 80 px
