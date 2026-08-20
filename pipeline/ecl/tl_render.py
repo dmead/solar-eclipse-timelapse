@@ -576,7 +576,10 @@ def draw_insets(out_planes, fine, ox2, oy2, insets, panel, zoom,
                (M, cy_mid), (out_w2 - panel - M, cy_mid),
                (cx_mid, M), (cx_mid, out_h2 - panel - M)]
 
-    for k, ins in enumerate(insets[:4]):
+    # However many the planner emitted, bounded by the slots that exist.
+    # This used to be a hard [:4] - a planner emitting six and a renderer
+    # drawing four loses two panels with nothing said.
+    for k, ins in enumerate(insets[:len(corners)]):
         # Source centre: superpixel coordinates, same units as the disc track.
         scx, scy = DRIZZLE * ins["cx"], DRIZZLE * ins["cy"]
         px, py = corners[ins.get("corner", k)]

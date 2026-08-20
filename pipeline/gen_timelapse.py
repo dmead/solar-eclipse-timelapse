@@ -146,6 +146,69 @@ def crescent_level(plane):
     return (float(np.median(plane[m])) if n else 0.0), n
 
 
+def settle_resolve(frames, log=print):
+    """Hold the crescent's brightness through the resolve instead of raising it.
+
+    Same argument as flatten_captures and the same measurement: the photosphere
+    has a fixed surface brightness, so anything that moves is the camera or the
+    sky. Here it moved a long way - the sliver rendered four times brighter as it
+    shrank to a hundredth of its area, because the gain was derived from a
+    background that the Moon was busy covering up.
+
+    The anchor is the level the crescent enters the resolve with, and gains may
+    only come DOWN from it. Only down, because the frames at the end of the
+    resolve are a few hundred pixels of saturated bead where the measurement gets
+    unreliable, and there the wrong answer should be a dim one.
+    """
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from ecl.source import open_source
+
+    res = [f for f in frames if f.get("resolve")]
+    if len(res) < 2:
+        return
+
+    meas, src, cur = {}, None, None
+    try:
+        for f in res:
+            key = (f["src"], f["index"])
+            if key in meas:
+                continue
+            if f["src"] != cur:
+                if src is not None:
+                    src.close()
+                src = open_source(f["src"])
+                cur = f["src"]
+            meas[key] = crescent_level(src.green(f["index"]).astype(np.float32))
+    finally:
+        if src is not None:
+            src.close()
+
+    anchor = None
+    for f in res:
+        lvl, area = meas[(f["src"], f["index"])]
+        if lvl <= 0 or area < FLATTEN_MIN_AREA:
+            continue
+        anchor = lvl * f["gain"]
+        break
+    if anchor is None:
+        log("  resolve: no measurable crescent - left alone")
+        return
+
+    n, worst = 0, 1.0
+    for f in res:
+        lvl, area = meas[(f["src"], f["index"])]
+        if lvl <= 0 or area < FLATTEN_MIN_AREA:
+            continue
+        want = anchor / lvl
+        if want < f["gain"]:
+            worst = max(worst, f["gain"] / want)
+            f["gain"] = round(want, 8)
+            n += 1
+    log("  resolve: held the crescent at %.3f; %d of %d frames dimmed, "
+        "worst by %.1fx" % (anchor, n, len(res), worst))
+
+
 def flatten_captures(frames, log=print):
     """Hold the rendered photosphere level constant within each capture.
 
@@ -678,6 +741,7 @@ def main():
     from. See flatten_captures.
     """
     flatten_captures(frames)
+    settle_resolve(frames)
 
     for f in frames:
         del f["satfrac"]

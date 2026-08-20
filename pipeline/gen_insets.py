@@ -149,6 +149,7 @@ def tune(out_dir, log=None):
     global BEAD_MIN_AREA, BEAD_MAX_THICK, BEAD_ARC_MAX, BEAD_ARC_MIN
     global BEAD_R_INNER, BEAD_R_OUTER, BEAD_SAT, BEAD_NEAR_FRAMES, BEAD_RUN_GAP
     global ZOOM, PANEL_PX, MIN_CLEAR_R, CLEAR_WEIGHT, CONTINUITY_PX
+    global MAX_PANELS
     global CONTINUITY_MAX_EXTRA, SPREAD_WEIGHT
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from ecl.params import load
@@ -180,6 +181,7 @@ def tune(out_dir, log=None):
     ZOOM = P.get("panels.zoom", ZOOM)
     MIN_CLEAR_R = P.get("panels.min_clear_r", MIN_CLEAR_R)
     CLEAR_WEIGHT = P.get("panels.clear_weight", CLEAR_WEIGHT)
+    MAX_PANELS = P.get("panels.max_panels", MAX_PANELS)
     CONTINUITY_PX = P.get("panels.continuity_px", CONTINUITY_PX)
     CONTINUITY_MAX_EXTRA = P.get("panels.continuity_max_extra",
                                  CONTINUITY_MAX_EXTRA)
@@ -738,6 +740,15 @@ PANEL_MARGIN = 24
 SLOT_NAMES = ["upper-left", "lower-left", "upper-right", "lower-right",
               "left", "right", "top", "bottom"]
 
+# Most panels a frame may carry.
+#
+# Four was the number of CORNERS the first version had, never a measurement. Six
+# slots clear the disc in this frame and totality regularly has more than four
+# subjects: a frame at 00:38 left a prominence at 1 o'clock and one on the right
+# limb unmarked while three panels sat down the left side. Capped by the slots
+# that actually fit, so a tighter frame still gets a sane answer.
+MAX_PANELS = 6
+
 # Smallest gap between a panel and the disc edge, as a fraction of the Moon's
 # radius. A slot that cannot make it is not offered.
 #
@@ -1095,7 +1106,8 @@ def main():
         fs = levels[best]
         mid = fs[len(fs)//2]
         mx, my = moon_of(mid)
-        pang[fn] = find_prominences(args.data, mid, mx, my, r_moon, 4)
+        pang[fn] = find_prominences(args.data, mid, mx, my, r_moon,
+                                    MAX_PANELS)
         print("  %-14s %d level(s), detect on gain %-9s (%d of %d frm) -> %d "
               "prominence(s)  %s"
               % (fn, len(keys), best[1], len(fs),
@@ -1506,7 +1518,7 @@ def main():
 
         feats = keep_on_limb(feats, mx, my, r_moon)
         feats = drop_overlapping(feats, args.panel)
-        feats = feats[:4]
+        feats = feats[:MAX_PANELS]
         counts[len(feats)] = counts.get(len(feats), 0) + 1
         per_frame.append((f, feats))
         del f["utc"]
