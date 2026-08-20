@@ -21,7 +21,7 @@ hundreds of pixels - so a discontinuity there is expected rather than smoothed
 away. Because every frame is centred on the Sun, that discontinuity never reaches
 the video.
 
-    python smooth_track.py --out S:/solar-eclipse/out
+    python smooth_track.py --out out
 
 Rewrites `configs/timelapse.json` with a smoothed centre on every frame and an
 output window sized to the track.
@@ -31,6 +31,7 @@ import argparse
 import json
 import math
 import os
+from ecl import paths  # noqa: E402
 
 # Quality gate for a circle fit. Arc coverage is the informative one: a fit can
 # have plenty of inliers and still be badly constrained if they all lie on a
@@ -331,7 +332,7 @@ def accepted(c):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default="S:/solar-eclipse/out")
+    ap.add_argument("--out", default=paths.out_dir())
     ap.add_argument("--centres", default=None)
     ap.add_argument("--window", default=None,
                     help="output window as WxH in half-resolution px, e.g. 720x720")

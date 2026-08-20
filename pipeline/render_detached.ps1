@@ -17,8 +17,8 @@
     Poll the log, or ecl.progress, for completion.
 #>
 param(
-    [string]$Cfg    = "S:\solar-eclipse\out\configs\timelapse.json",
-    [string]$Data   = "Z:\solar-eclipse\Sun",
+    [string]$Cfg    = "$env:ECLIPSE_OUT\configs\timelapse.json",
+    [string]$Data   = "$env:ECLIPSE_DATA",
     [string]$Frames = "Z:\eclipse-work\tl_py",
     [string]$Final  = "Z:\eclipse-work\final",
     [string]$Log    = "Z:\eclipse-work\render.log",
@@ -26,7 +26,9 @@ param(
     [switch]$KeepPrevious     # do not park the existing cut
 )
 
-$py = "S:\solar-eclipse\pipeline\.venv\Scripts\python.exe"
+# The venv beside this script, so the launcher works from wherever the
+# repo lives rather than from one machine's drive letter.
+$py = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
 
 if (-not $Resume -and -not $KeepPrevious) {
     $st = Get-Date -Format "yyyyMMdd-HHmm"
@@ -57,10 +59,10 @@ if (`$LASTEXITCODE -ne 0) { "encode FAILED `$LASTEXITCODE" | Add-Content '$Log';
 "ALL DONE `$(Get-Date -Format HH:mm:ss)" | Add-Content '$Log'
 "@
 
-Set-Location "S:\solar-eclipse\pipeline"
+Set-Location $PSScriptRoot
 $p = Start-Process powershell `
         -ArgumentList "-NoProfile", "-WindowStyle", "Hidden", "-Command", $inner `
-        -WorkingDirectory "S:\solar-eclipse\pipeline" -PassThru
+        -WorkingDirectory $PSScriptRoot -PassThru
 
 Write-Host "detached render pid $($p.Id), $want frames expected"
 Write-Host "  log:      $Log"

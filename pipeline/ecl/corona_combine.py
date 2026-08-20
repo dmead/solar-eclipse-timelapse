@@ -20,6 +20,7 @@ import numpy as np
 
 from .corona import measure_moon
 from .imgio import read_xisf, stack_channels, write_xisf
+from . import paths
 
 __all__ = ["combine_level"]
 
@@ -95,7 +96,7 @@ def radius_consensus(payloads, log=print):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--config", default="S:/solar-eclipse/out/configs/eclipse.json")
+    ap.add_argument("--config", default=paths.in_out("configs", "eclipse.json"))
     ap.add_argument("--levels-dir", default=None)
     ap.add_argument("--only", default=None, help="comma-separated segment ids")
     ap.add_argument("--fixed-radius", type=float, default=0.0)

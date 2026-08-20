@@ -27,6 +27,7 @@ import time
 from .vendor.stack import stacker
 
 from . import slicer
+from . import paths
 
 __all__ = ["run_stack_job", "run_dataset", "expected_slice_bytes", "FIELD_WARP"]
 
@@ -229,7 +230,7 @@ def run_dataset(cfg, channels=None, only=None, slice_only=False,
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--config", default="S:/solar-eclipse/out/configs/eclipse.json")
+    ap.add_argument("--config", default=paths.in_out("configs", "eclipse.json"))
     ap.add_argument("--channels", default=None, help="comma-separated, e.g. R,G,B")
     ap.add_argument("--only", default=None, help="comma-separated segment ids")
     ap.add_argument("--slice-only", action="store_true")

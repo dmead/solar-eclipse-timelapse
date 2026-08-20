@@ -39,6 +39,7 @@ from .vendor.core.fftreg import PhaseCorrelator
 
 from . import serio
 from .source import open_source
+from . import paths
 
 # A shift larger than this is a failed correlation, not the mount. The mount
 # drifts ~40 px over a 60 s capture, so this has to be generous.
@@ -145,8 +146,8 @@ def track_corona(frames, engine=DEFAULT_ENGINE, log=print):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--config", default="S:/solar-eclipse/out/configs/timelapse.json")
-    ap.add_argument("--out", default="S:/solar-eclipse/out/diag/corona_track.json")
+    ap.add_argument("--config", default=paths.in_out("configs", "timelapse.json"))
+    ap.add_argument("--out", default=paths.in_out("diag", "corona_track.json"))
     ap.add_argument("--engine", default=DEFAULT_ENGINE, choices=["skimage", "ported"])
     ap.add_argument("--data-dir", default=None,
                     help="read the captures from here instead of the paths "

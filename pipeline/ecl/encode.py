@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import time
+from . import paths
 
 __all__ = ["encode", "encode_deliverables", "CUTS"]
 
@@ -111,10 +112,10 @@ def encode_deliverables(frame_dir, out_dir, fps, cuts=None, log=print):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--config", default="S:/solar-eclipse/out/configs/timelapse.json")
+    ap.add_argument("--config", default=paths.in_out("configs", "timelapse.json"))
     ap.add_argument("--frames", default=None,
                     help="frame directory (default: the config's outDir)")
-    ap.add_argument("--out-dir", default="S:/solar-eclipse/out/final")
+    ap.add_argument("--out-dir", default=paths.in_out("final"))
     ap.add_argument("--only", default=None,
                     help="comma-separated cut names, e.g. timelapse.mp4")
     ap.add_argument("--fps", type=float, default=None)

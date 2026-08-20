@@ -23,6 +23,7 @@ from astropy.io import fits
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ecl.demosaic import bilinear_rggb  # noqa: E402
 from serlib import SerFile  # noqa: E402
+from ecl import paths  # noqa: E402
 
 # Full-resolution image scale: the Sun's limb was fitted at 558 px radius against
 # a true angular radius of 959 arcsec on 2024-04-08.
@@ -52,10 +53,10 @@ def debayer_rggb(raw, W, H):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data", default="S:/solar-eclipse/Sun")
-    ap.add_argument("--segments", default="S:/solar-eclipse/out/segments.json")
-    ap.add_argument("--lightcurve", default="S:/solar-eclipse/out/lightcurve.json")
-    ap.add_argument("--out", default="S:/solar-eclipse/umbra/fits")
+    ap.add_argument("--data", default=paths.data_dir())
+    ap.add_argument("--segments", default=paths.in_out("segments.json"))
+    ap.add_argument("--lightcurve", default=paths.in_out("lightcurve.json"))
+    ap.add_argument("--out", default=paths.in_out("fits"))
     ap.add_argument("--per-segment", type=int, default=PER_SEGMENT)
     ap.add_argument("--levels", default=None,
                     help="comma-separated level names to keep, e.g. L0,L1,L2")

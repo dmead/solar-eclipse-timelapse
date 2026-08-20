@@ -37,6 +37,7 @@ import numpy as np
 
 from . import serio
 from .source import open_source
+from . import paths
 
 # Row scan step, in half-resolution pixels.
 SCAN_STEP = 2
@@ -513,8 +514,8 @@ def find_centres(frames, log=print):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--config", default="S:/solar-eclipse/out/configs/timelapse.json")
-    ap.add_argument("--out", default="S:/solar-eclipse/out/diag/centres.json")
+    ap.add_argument("--config", default=paths.in_out("configs", "timelapse.json"))
+    ap.add_argument("--out", default=paths.in_out("diag", "centres.json"))
     ap.add_argument("--limit", type=int, default=None,
                     help="fit only the first N frames (smoke tests)")
     ap.add_argument("--data-dir", default=None,

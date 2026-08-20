@@ -29,7 +29,7 @@ The cusps need the Moon's centre - which no stage measures during the partial
 phases, since the detector is fitting the photosphere there. It is recovered here
 by fitting the terminator the Moon casts on the disc, which needs no ephemeris.
 
-    D:/projects/umbra/venv/Scripts/python.exe gen_insets.py --out S:/solar-eclipse/out
+    python gen_insets.py --out out --data /path/to/captures
 
 Run after smooth_track.py; rewrites configs/timelapse.json with an "insets" list
 on every frame.
@@ -46,6 +46,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from serlib import SerFile  # noqa: E402
+from ecl import paths  # noqa: E402
 
 # Panel geometry, in FINE (sensor) pixels. The source box is the panel divided by
 # the zoom, so a bigger zoom means a tighter box.
@@ -985,8 +986,8 @@ def fit_cusp_track(rows, deg):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default="S:/solar-eclipse/out")
-    ap.add_argument("--data", default="S:/solar-eclipse/Sun")
+    ap.add_argument("--out", default=paths.out_dir())
+    ap.add_argument("--data", default=paths.data_dir())
     ap.add_argument("--zoom", type=float, default=ZOOM)
     ap.add_argument("--cusp-zoom", type=float, default=CUSP_ZOOM)
     ap.add_argument("--panel", type=int, default=PANEL_PX)

@@ -27,6 +27,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from serlib import SerFile  # noqa: E402
+from ecl import paths  # noqa: E402
 
 # Fraction of the frame's peak used to select lit pixels. High enough to exclude
 # the glow around the crescent, which is asymmetric and would drag the centroid.
@@ -50,8 +51,8 @@ def centroid(ser, index):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default="S:/solar-eclipse/out")
-    ap.add_argument("--data", default="S:/solar-eclipse/Sun")
+    ap.add_argument("--out", default=paths.out_dir())
+    ap.add_argument("--data", default=paths.data_dir())
     ap.add_argument("--file", default="14_05_08.ser")
     ap.add_argument("--calib", default="14_03_31.ser,14_06_45.ser",
                     help="neighbouring captures where the circle fit works")
