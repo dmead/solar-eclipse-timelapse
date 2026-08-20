@@ -173,6 +173,25 @@ def main(argv=None):
                  "--config", os.path.join(out, "configs", "timelapse.json")]
         _run(mod, a, print)
 
+        if name == "select":
+            """
+            Record where the frames actually go.
+
+            The planner writes `outDir` from its own argument, and every caller
+            here passes --frames separately, so the two could disagree forever
+            without anyone noticing: `ecl.progress` with no arguments believed
+            the config and counted 1660 frames in a directory left over from an
+            earlier run, when the answer was 2228 somewhere else.
+            """
+            cfgp = os.path.join(out, "configs", "timelapse.json")
+            with open(cfgp, encoding="utf-8-sig") as fh:
+                cfg = json.load(fh)
+            if cfg.get("outDir") != frames:
+                cfg["outDir"] = frames
+                with open(cfgp, "w", encoding="utf-8") as fh:
+                    json.dump(cfg, fh)
+                print(f"  outDir -> {frames}")
+
     print(f"\ndone in {(time.time() - t0) / 60:.1f} min")
 
 
