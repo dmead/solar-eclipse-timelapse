@@ -72,8 +72,13 @@ A fixture ships with the pipeline, so you can check an install end to end in
 about a minute rather than by waiting for an eclipse:
 
 ```powershell
-python tools/make_synthetic.py D:\eclipse-demo\data
+python tools/make_synthetic.py D:\eclipse-demo\data     # Windows
 python -m ecl.run D:\eclipse-demo\data
+```
+
+```bash
+python tools/make_synthetic.py ~/eclipse-demo/data       # Linux
+python -m ecl.run ~/eclipse-demo/data
 ```
 
 That writes three synthetic captures — partial phases, second contact, a
@@ -85,17 +90,34 @@ Add `--format png` or `--format xisf` to exercise the other readers.
 
 ## 1. Install
 
-You need Python 3.11 or newer and ffmpeg. Nothing else is assumed.
+You need Python 3.11 or newer and ffmpeg. Nothing else is assumed. Windows and
+Linux are both tested; the only difference below is how you get those two.
+
+**Windows**
 
 ```powershell
 winget install --id Python.Python.3.12 -e
 winget install --id Gyan.FFmpeg -e
 ```
 
-Close and reopen PowerShell so both land on `PATH`, then check:
+Close and reopen PowerShell so both land on `PATH`.
 
-```powershell
-python --version
+**Linux** (Debian/Ubuntu; `python3-venv` is a separate package on Debian and its
+derivatives, and leaving it out is the usual reason `python3 -m venv` fails with
+nothing but a suggestion to install it)
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip ffmpeg
+```
+
+On Fedora it is `sudo dnf install python3 python3-pip ffmpeg`, and on Arch
+`sudo pacman -S python python-pip ffmpeg`.
+
+Then check, on either:
+
+```bash
+python3 --version
 ffmpeg -version
 ```
 
@@ -108,6 +130,18 @@ cd solar-eclipse-timelapse
 
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e .
+```
+
+The same three commands on Linux, with the activate path Linux uses:
+
+```bash
+git clone https://github.com/dmead/solar-eclipse-timelapse.git
+cd solar-eclipse-timelapse
+
+python3 -m venv .venv
+source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e .
 ```
@@ -374,6 +408,34 @@ totality. Check `segments.txt`; the `kind` column is where to look.
 
 **Salt-and-pepper over the whole rendered frame** — almost always 8-bit input.
 See the note on bit depth in section 2.
+
+---
+
+## Platforms
+
+Verified on both, from a clean clone through `pip install .` to an mp4:
+
+| | |
+|---|---|
+| Windows 11 | Python 3.12 and 3.14 |
+| Ubuntu 24.04 LTS | Python 3.12 |
+
+Nothing in the pipeline is Windows-specific. The one place the OS shows through
+is `ecl.affinity`, which pins render workers to physical cores through a Win32
+call and is skipped anywhere else — `--affinity` is simply a no-op on Linux and
+the render is otherwise identical.
+
+The synthetic fixture is byte-identical across the two (same seed, same md5), and
+segmentation agrees to five decimal places, so a disagreement between platforms
+is a real finding rather than expected drift.
+
+**One thing worth knowing if you are porting or debugging.** The render pool's
+start method differs by platform, and it decides whether a worker inherits the
+parent's tuned settings or re-imports the module and gets its defaults:
+Windows and macOS `spawn`, Linux `fork` up to Python 3.13, and `forkserver` from
+3.14 on. Only `fork` inherits. The passes therefore hand their tuned state to
+workers explicitly rather than relying on inheritance — see `tl_render.TUNED`
+and `docs/STATE.md`, which records what went wrong when they did not.
 
 ---
 

@@ -6,8 +6,18 @@ commands at the end of this document are the current truth.*
 
 ## 2026-08-20 — the render pool never read the config
 
-`tune()` writes seventeen module globals. The pool is SPAWNED, not forked, so on
-Windows every worker re-imported `tl_render` and got the built-in defaults. The
+`tune()` writes seventeen module globals, and whether a worker sees them depends
+entirely on the pool's start method: only `fork` inherits module state.
+
+| platform | start method | inherits tuned globals |
+|---|---|---|
+| Windows, macOS | `spawn` | no |
+| Linux, Python <= 3.13 | `fork` | yes |
+| Linux, Python >= 3.14 | `forkserver` | **no** |
+
+So it was a Windows-only bug when it was written and is a Linux one now too:
+3.14 moved Unix off `fork`, and this project supports 3.11 upward. Every worker
+re-imported `tl_render` and got the built-in defaults. The
 parent tuned itself, logged the tuned values, and then handed all the rendering
 to processes that had never read `eclipse.toml`. `--workers 1` renders in-process
 and always behaved, which is why a knob that appeared to do nothing at 24
@@ -27,7 +37,14 @@ line saying it had chosen 1. And every setting in `[render]`, plus the panel
 exposure settings, did nothing at all.
 
 Found by setting `drizzle = 1` for the alignment comparison and getting
-2400x1800 frames out of it.
+2400x1800 frames out of it. Confirmed after the fix: the same config renders
+1200x900.
+
+Verified on Ubuntu 24.04 the same day — a clean clone, `pip install .`, the
+synthetic fixture and the whole pipeline to an mp4 in 44 s, 49 tests green. The
+fixture is byte-identical across the two platforms (same md5) and segmentation
+agrees to five decimals, so a cross-platform difference is a finding rather than
+expected drift.
 
 `tuned_state()` / `apply_tuned()` now pass the parent's state through the pool
 initializer. `tests/test_worker_state.py` reads the `global` declarations out of
