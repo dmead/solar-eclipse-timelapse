@@ -163,6 +163,16 @@ DEFAULTS = {
         "near_frames": 10,
         "run_gap": 4,
     },
+    "gif": {
+        # The animated preview. Screen time is a BUDGET split across whichever
+        # chapters the data has - see ecl.encode.CHAPTERS - not a fixed length
+        # per chapter, so a totality-only shoot gets the same nine seconds.
+        "seconds": 9.0,
+        "min_chapter_s": 1.0,
+        "width": 480,
+        "fps": 10,
+        "colors": 64,
+    },
     "dwell": {
         "resolve_s": 9.0,
         "beads_s": 4.5,
@@ -245,6 +255,11 @@ _COMMENTS = {
     "panels.arc_min_zoom": "least magnification a panel may drop to holding an arc",
     "beads.min_area_r2": "smallest clipped area called a bead, as a fraction of r^2",
     "beads.max_blob_frac": "above this the clipped region is one blob: diamond ring, not beads",
+    "gif.seconds": "total screen time of the animated preview, split across its chapters",
+    "gif.min_chapter_s": "chapters allotted less than this are dropped rather than flashed",
+    "gif.width": "preview width in px; height follows the output aspect",
+    "gif.fps": "preview frame rate - GIF has no interframe compression, so this is most of the file size",
+    "gif.colors": "palette entries; the subject is a white corona on black sky",
     "dwell.resolve_s": "screen seconds for the filter-off sequence",
     "dwell.beads_s": "screen seconds held on Baily's beads",
     "select.bead_stack": "raw frames averaged per bead video frame",
