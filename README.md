@@ -25,9 +25,10 @@ top of this README**, on the 2024-04-08 data: 2299 frames, 76.6 s at 30 fps, all
 the panel size, the segments in the preview and the features every panel follows
 were all chosen by the pipeline from the data.
 
-The full-resolution cut of the hand-graded version is on the
+The full-resolution cut of that same run is on the
 [v0.1.0 release](https://github.com/dmead/solar-eclipse-timelapse/releases/tag/v0.1.0)
-(108 MB, plus a 1080-wide cut and a 2 MB preview).
+— 2360x1760 at CRF 17 (105 MB), plus a 1080-wide cut sized to survive Instagram
+without a re-encode, a 2 MB preview, and the animated preview above.
 
 `timelapse.gif` below is a pipeline output too, not a clip chosen by hand: nine
 seconds assembled from four segments it picked out of the run — the crescent at
