@@ -4,6 +4,36 @@
 are kept as written; where one names a file that has since moved, the rebuild
 commands at the end of this document are the current truth.*
 
+## 2026-08-20 — the render pool never read the config
+
+`tune()` writes seventeen module globals. The pool is SPAWNED, not forked, so on
+Windows every worker re-imported `tl_render` and got the built-in defaults. The
+parent tuned itself, logged the tuned values, and then handed all the rendering
+to processes that had never read `eclipse.toml`. `--workers 1` renders in-process
+and always behaved, which is why a knob that appeared to do nothing at 24
+workers would start working the moment you tried to reproduce it serially.
+
+**Cost to the 2024-04-08 render: essentially nil, by luck.** Measured by diffing
+a fresh import against a tuned one, exactly one setting differed —
+`MAX_GROUP_SHIFT_PX`, 4.0 px used against 4.172 asked for. The groups run at
+~1 px with zero rejections against a 4 px bound, so neither number rejects
+anything. Everything else matched because this data's survey picks drizzle 2 and
+the module default IS 2.
+
+**Cost to anyone else: real.** A well-sampled disc is the documented case where
+the survey drops `render.drizzle` to 1; those runs rendered at 2 regardless —
+four times the pixels and four times the memory per worker, against a survey
+line saying it had chosen 1. And every setting in `[render]`, plus the panel
+exposure settings, did nothing at all.
+
+Found by setting `drizzle = 1` for the alignment comparison and getting
+2400x1800 frames out of it.
+
+`tuned_state()` / `apply_tuned()` now pass the parent's state through the pool
+initializer. `tests/test_worker_state.py` reads the `global` declarations out of
+`tune()` and fails if `TUNED` does not name the same set, so adding a setting
+and forgetting the workers breaks the suite instead of silently disabling it.
+
 ## Honest assessment of the timelapse
 
 **No PIPP-style per-clip stabilization was ever done.** The timelapse centres each

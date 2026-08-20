@@ -184,6 +184,41 @@ PEDESTAL_FRAC = 1.0
 DEFAULT_ENGINE = "ported"
 
 
+# Every module global `tune()` writes. It is a list rather than something
+# derived at runtime because it has to be checkable — `test_worker_state.py`
+# reads the `global` statements out of `tune` and fails if the two disagree, so
+# adding a tuned setting and forgetting the workers cannot pass review twice.
+TUNED = (
+    "DRIZZLE", "MAX_GROUP_SHIFT_PX", "GAMMA", "SHOULDER_KNEE", "SHOULDER_CEIL",
+    "PEDESTAL_PCT", "PEDESTAL_FRAC", "GAIN_JUMP", "GAP_FRAMES",
+    "GROUP_LEVEL_TOL", "PANEL_EXPOSE", "PANEL_EXPOSE_STRENGTH",
+    "OCCLUDE_LEADERS", "SHOULDER_MAX", "PANEL_EXPOSE_PCT",
+    "PANEL_EXPOSE_TARGET", "DEFAULT_ENGINE",
+)
+
+
+def tuned_state():
+    """The tuned constants, as a dict a worker process can be handed."""
+    g = globals()
+    return {k: g[k] for k in TUNED}
+
+
+def apply_tuned(state):
+    """Adopt a parent's tuned constants in this process.
+
+    WHY THIS EXISTS. `tune()` writes module globals, and the render pool is
+    spawned, not forked: on Windows every worker re-imports this module and gets
+    the built-in DEFAULTS. The parent tuned itself, logged the tuned values, and
+    then handed the actual rendering to 24 processes that had never read the
+    config — so the whole [render] section of eclipse.toml did nothing, and said
+    it had. Setting `drizzle = 1` on a well-sampled disc, which is exactly what
+    the survey chooses for one, still rendered at 2 and quadrupled the pixel
+    count. It only ever behaved with `--workers 1`, which renders in-process.
+    """
+    globals().update(state)
+    _SHOULDER_CACHE.clear()
+
+
 def tune(out_dir, log=None):
     """Resolve the render constants from the config against the survey."""
     global DRIZZLE, MAX_GROUP_SHIFT_PX, GAMMA, SHOULDER_KNEE, SHOULDER_CEIL
@@ -846,7 +881,7 @@ _THREAD_ENV = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
                "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")
 
 
-def _init_worker(cpus=None, slot=None):
+def _init_worker(cpus=None, slot=None, state=None):
     """One thread per worker process, and optionally one core to run it on.
 
     Three separate thread pools have to be pinned, and missing any one of them
@@ -862,6 +897,8 @@ def _init_worker(cpus=None, slot=None):
     import cv2
 
     cv2.setNumThreads(1)
+    if state:
+        apply_tuned(state)
 
     # Claim a core. The pool gives every worker the same initargs, so the slot is
     # taken from a shared counter rather than passed in - there is no worker index
@@ -1137,7 +1174,7 @@ def main(argv=None):
 
     with ProcessPoolExecutor(max_workers=args.workers,
                              initializer=_init_worker,
-                             initargs=(cpus, slot)) as ex:
+                             initargs=(cpus, slot, tuned_state())) as ex:
         total = sum(ex.map(_shard, jobs))
     print(f"{total} frames in {(time.time() - t0) / 60:.1f} min")
 
