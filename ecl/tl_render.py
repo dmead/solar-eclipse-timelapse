@@ -707,6 +707,7 @@ def render_frames(frames, cfg, engine=None, log=print):
     out_w2, out_h2 = DRIZZLE * out_w, DRIZZLE * out_h
     dissolve = cfg.get("dissolve", 3)
     panel, zoom = cfg.get("insetPanel", 420), cfg.get("insetZoom", 3)
+
     log(f"timelapse: {len(frames)} frames -> {out_dir}")
     log(f"  output {out_w2}x{out_h2} (drizzle x{DRIZZLE}), dissolve {dissolve} "
         f"frames, correlator {engine}")
@@ -996,6 +997,38 @@ def sample_frames(frames, dissolve=3):
     return sorted(keep)
 
 
+def check_panel_scale(cfg, log=print):
+    """Warn when the config's panel size was planned at a different drizzle.
+
+    `insetPanel` is in FINE px, so it is only valid for the drizzle it was
+    planned at. The panel stage sizes it as a fraction of DRIZZLE x the output
+    window, so rendering the same config at another drizzle changes the fraction
+    with it: 420 px is 17.5% of a 2400 px canvas and 35% of a 1200 px one, which
+    puts four boxes over most of the frame and buries the subject they point at.
+
+    This could not come up while the workers ignored `render.drizzle`, because
+    it never varied. It can now. Changing drizzle means re-running from the
+    insets pass - the same rule `--from` already enforces for every setting an
+    earlier pass baked into this config.
+
+    Checked HERE and not inside `render_frames`, which is where it was first
+    written: `_shard` hands the renderer `log=lambda m: None`, so anything it
+    logs during a parallel render goes nowhere. Worker EXCEPTIONS still
+    propagate, because the pool re-raises them in the parent - but a worker's
+    informational output is discarded, and a warning nobody sees is not one.
+    """
+    panel = cfg.get("insetPanel")
+    if not panel or not cfg.get("outW"):
+        return
+    short = DRIZZLE * min(cfg["outW"], cfg["outH"])
+    if panel > 0.30 * short:
+        log(f"  WARNING: inset panel is {panel} px on a "
+            f"{DRIZZLE * cfg['outW']}x{DRIZZLE * cfg['outH']} canvas "
+            f"({100 * panel / short:.0f}% of the short side). This config was "
+            f"planned at a different drizzle; re-run the insets pass or the "
+            f"panels will cover the frame.")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--config", default=paths.in_out("configs", "timelapse.json"))
@@ -1040,6 +1073,7 @@ def main(argv=None):
     if args.out_dir:
         cfg["outDir"] = args.out_dir
     serio.restage(cfg, args.data_dir)
+    check_panel_scale(cfg, log=print)
     # Stamp the global sequence number before any slicing, so --start/--limit
     # render the same numbered frames they would in a full run.
     for i, fr in enumerate(cfg["frames"]):
