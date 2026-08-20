@@ -101,6 +101,9 @@ DEFAULTS = {
         # corners without naming them, and still does the right thing on a frame
         # shape where that stops being true.
         "clear_weight": 2.0,
+        # Most panels a frame may carry, capped by the slots that fit. Four was
+        # the corner count of the first version, never a measurement.
+        "max_panels": 6,
         # Leader length, in px, worth paying to leave a panel where it already
         # is. Panels moving mid-video reads as chaos however good each individual
         # arrangement is, so this is deliberately far larger than any leader.
