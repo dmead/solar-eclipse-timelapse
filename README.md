@@ -24,10 +24,14 @@ an editable config, and reused from then on.
 1080-wide cut and a 2 MB preview. That frame above is one of its frames; nothing
 in it was placed by hand.
 
-Second contact — the crescent thinning to Baily's beads, the corona arriving, and
-the panels re-forming on what is newly there:
+`timelapse.gif` below is one of the pipeline's own outputs, not a still cut by
+hand: nine seconds assembled from four segments it picked out of the run — the
+crescent at its thinnest, the filter coming off, second contact, and totality.
+Each chapter is located from what the earlier passes marked, so data that is
+totality only gets three chapters over the same budget and nothing is
+special-cased.
 
-![Second contact](docs/media/second-contact.gif)
+![Preview: partial phases, the filter coming off, second contact, totality](docs/media/preview.gif)
 
 Written for one shoot — the 2024-04-08 totality from Cleveland, an ASI585MC on a
 70 mm refractor — and then generalised. Every geometric constant is a fraction
@@ -176,7 +180,7 @@ The passes, in the order they run and with what each leaves behind:
 | `smooth` | (the config) | the drift model, and which fits to distrust |
 | `insets` | (the config) | what each zoom panel follows |
 | `render` | `frames/*.png` | the frames |
-| `encode` | `final/*.mp4` | the cuts |
+| `encode` | `final/*.mp4`, `final/timelapse.gif` | three cuts and the preview |
 
 Outputs go to `D:\eclipse\out` by default — beside the data, not inside it, so a
 read-only or network data folder works. Override with `--out` and `--frames`.
@@ -307,6 +311,7 @@ Things worth changing first:
 | `panels.size_frac` | panels too large or too small for the output frame |
 | `panels.max_panels` | you want fewer things labelled at once |
 | `centres.r_search_*_r` | the one global radius acquisition looked in the wrong range |
+| `gif.seconds`, `gif.width` | the animated preview is too long, too short, or too big a file |
 
 ---
 
