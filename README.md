@@ -24,6 +24,11 @@ an editable config, and reused from then on.
 1080-wide cut and a 2 MB preview. That frame above is one of its frames; nothing
 in it was placed by hand.
 
+Second contact — the crescent thinning to Baily's beads, the corona arriving, and
+the panels re-forming on what is newly there:
+
+![Second contact](docs/media/second-contact.gif)
+
 Written for one shoot — the 2024-04-08 totality from Cleveland, an ASI585MC on a
 70 mm refractor — and then generalised. Every geometric constant is a fraction
 of the solar radius the survey measures, so the same config works on an 80 px
