@@ -24,7 +24,7 @@ Only captures that contain a filter change are scanned. Beads exist for a couple
 of seconds either side of a contact and nowhere else, and scanning all of
 totality would read three thousand frames to find nothing in 90% of them.
 
-    python -m ecl.beadwindow --out S:/solar-eclipse/out --data Z:/solar-eclipse/Sun
+    python -m ecl.beadwindow --out out --data /path/to/captures
 
 Writes `diag/beads.json`. `gen_timelapse` reads it if present and falls back to
 its saturation heuristic if not.
@@ -38,6 +38,7 @@ import cv2
 import numpy as np
 
 from .source import open_source
+from . import paths
 
 __all__ = ["scan_capture", "find_window", "main"]
 
@@ -121,8 +122,8 @@ def find_window(rows):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--out", default="S:/solar-eclipse/out")
-    ap.add_argument("--data", default="S:/solar-eclipse/Sun")
+    ap.add_argument("--out", default=paths.out_dir())
+    ap.add_argument("--data", default=paths.data_dir())
     ap.add_argument("--step", type=int, default=2)
     args = ap.parse_args(argv)
     tune(args.out, log=print)

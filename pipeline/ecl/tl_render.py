@@ -67,6 +67,7 @@ from .vendor.core.warp import resample, translate
 from . import affinity, font5x7, serio
 from .imgio import write_png
 from .source import open_source
+from . import paths
 
 # Drizzle scale. Everything is rendered at 2x so the drizzled totality can sit in
 # the same sequence as the resampled partials with one geometry throughout.
@@ -958,7 +959,7 @@ def sample_frames(frames, dissolve=3):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--config", default="S:/solar-eclipse/out/configs/timelapse.json")
+    ap.add_argument("--config", default=paths.in_out("configs", "timelapse.json"))
     ap.add_argument("--workers", type=int, default=default_workers(),
                     help="contiguous shards rendered in parallel processes. "
                          "Defaults to the physical core count, where the "

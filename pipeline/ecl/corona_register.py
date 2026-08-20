@@ -30,6 +30,7 @@ import numpy as np
 
 from .corona import log_gradient
 from .imgio import read_xisf
+from . import paths
 
 # Decimation factors, coarsest first, with the half-width of the search at each
 # level expressed in that level's own pixels.
@@ -183,7 +184,7 @@ def register_dataset(cfg, levels_dir=None, out_path=None, log=print):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--config", default="S:/solar-eclipse/out/configs/eclipse.json")
+    ap.add_argument("--config", default=paths.in_out("configs", "eclipse.json"))
     ap.add_argument("--levels-dir", default=None)
     ap.add_argument("--out", default=None)
     args = ap.parse_args(argv)

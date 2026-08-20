@@ -10,7 +10,7 @@ each step against the spread of the series' own steps, so a uniform capture yiel
 exactly one segment and a file with a filter change yields a boundary where the
 brightness actually moves.
 
-    python scan_ser.py --data S:/solar-eclipse/Sun --out S:/solar-eclipse/out
+    python scan_ser.py --data /path/to/captures --out out
 
 Outputs `lightcurve.json` (cached; delete to force a rescan), `segments.json` and a
 human-readable `segments.txt`.
@@ -25,6 +25,7 @@ import sys
 import time
 
 from serlib import SerFile
+from ecl import paths  # noqa: E402
 
 # Sampling: every Nth frame, and this many evenly spaced rows within each frame.
 DEFAULT_STEP = 20
@@ -276,8 +277,8 @@ def write_report(files_segs, out_dir, log):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data", default="S:/solar-eclipse/Sun")
-    ap.add_argument("--out", default="S:/solar-eclipse/out")
+    ap.add_argument("--data", default=paths.data_dir())
+    ap.add_argument("--out", default=paths.out_dir())
     ap.add_argument("--step", type=int, default=DEFAULT_STEP)
     ap.add_argument("--rows", type=int, default=DEFAULT_ROWS)
     args = ap.parse_args()

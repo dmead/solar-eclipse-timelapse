@@ -25,7 +25,7 @@ when the filter comes off the subject changes from photosphere to corona, and no
 gain relates the two. That boundary is a hard cut in the video, which is what it
 looked like in person.
 
-    python gen_timelapse.py --out S:/solar-eclipse/out
+    python gen_timelapse.py --out out
 
 Writes `configs/timelapse.json` for pjsr/tl-frames.js.
 """
@@ -35,6 +35,7 @@ import json
 import os
 
 import numpy as np
+from ecl import paths  # noqa: E402
 
 FULL_SCALE = 65535.0
 
@@ -287,7 +288,7 @@ def flatten_captures(frames, log=print):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default="S:/solar-eclipse/out")
+    ap.add_argument("--out", default=paths.out_dir())
     ap.add_argument("--stride", type=int, default=1,
                     help="take every Nth light-curve sample (1 = all)")
     ap.add_argument("--fps", type=int, default=30)

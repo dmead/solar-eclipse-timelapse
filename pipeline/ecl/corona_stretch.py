@@ -39,6 +39,7 @@ import time
 import numpy as np
 
 from .imgio import read_xisf, stack_channels, write_xisf
+from . import paths
 
 # Annulus for the sky pedestal, in Moon radii, and the percentile taken in it.
 SKY_R_INNER, SKY_R_OUTER = 3.2, 3.9
@@ -292,9 +293,9 @@ def stretch_corona(in_path, out_path, moon_path, log=print,
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--in-path", default="S:/solar-eclipse/out/final/corona_hdr.xisf")
-    ap.add_argument("--out", default="S:/solar-eclipse/out/final/corona_final.xisf")
-    ap.add_argument("--moon", default="S:/solar-eclipse/out/final/corona_flat_moon.json")
+    ap.add_argument("--in-path", default=paths.in_out("final", "corona_hdr.xisf"))
+    ap.add_argument("--out", default=paths.in_out("final", "corona_final.xisf"))
+    ap.add_argument("--moon", default=paths.in_out("final", "corona_flat_moon.json"))
     ap.add_argument("--contrast", default="boxblur", choices=["boxblur", "starlet"],
                     help="step 3: the verified two-scale box blur, or the "
                          "multiscale starlet finish on L*")

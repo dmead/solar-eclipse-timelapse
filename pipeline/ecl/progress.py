@@ -26,6 +26,7 @@ import math
 import os
 import re
 import time
+from . import paths
 
 __all__ = ["scan", "render_progress"]
 
@@ -132,7 +133,7 @@ def main(argv=None):
     from .tl_render import default_workers
 
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--config", default="S:/solar-eclipse/out/configs/timelapse.json")
+    ap.add_argument("--config", default=paths.in_out("configs", "timelapse.json"))
     ap.add_argument("--frames", default=None, help="frame dir (default: cfg outDir)")
     ap.add_argument("--workers", type=int, default=default_workers(),
                     help="shard count the render was started with")
