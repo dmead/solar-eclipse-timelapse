@@ -4,6 +4,45 @@
 are kept as written; where one names a file that has since moved, the rebuild
 commands at the end of this document are the current truth.*
 
+## 2026-08-20 — full re-run on the real data, against the published one
+
+The whole pipeline re-run from zero on the 449 GB, into a fresh `out-verify` so
+the state behind the published video was untouched. What it settles:
+
+**The rewrite is faithful.** `ecl.segment` — new reader, new statistic, new
+units — reproduces `scan_ser.py` exactly: 22 captures, 42 segments, every
+boundary, state, kind and exposure level identical, and it re-found the filter
+removal at frame 821 of `14_13_00` and the five-level ladder on its own. Medians
+differ only by the unit change (490 ADU against 0.0074769, and 490/65535 =
+0.0074769). `tl_centres` measured the sun limb at 279.0 px plane / 558 px
+sensor, the same number recorded above.
+
+**The drizzle bug was real and cost this data nothing.** Both halves are
+measured, not argued:
+
+- Real: the same config asking for `drizzle = 1` rendered 2400x1800 before the
+  fix and 1200x900 after it.
+- Harmless here: holding the PUBLISHED config fixed and re-rendering 48 frames
+  with the current code — spans at stack depth 3 and 20, inside totality where
+  the group-shift bound applies — gives **48 of 48 byte-identical** frames. The
+  one input that actually differed, `MAX_GROUP_SHIFT_PX` 4.0 against 4.172,
+  rejects nothing at either value on groups measured at ~1 px.
+
+So no documentation image needed regenerating: `docs/media/preview.gif`
+re-encoded from the published frames comes back with the same md5.
+
+Holding the config fixed is the only way to attribute a difference to the code.
+A plain re-run does NOT reproduce the published video, and should not be read as
+a regression when it does not: `ecl.run` passes no framing flags, so the window
+is chosen automatically at 1180x880 keeping 2299 frames, where the published cut
+used `--window 1120x840 --drop-padded --require-disc` and kept 2228. 27.8% of
+frames then reach past a sensor edge — by at most 24 px of 2360, onto sky that
+renders as exact zero either side of the boundary, so it is invisible. The
+auto window shrinks precisely to keep that true.
+
+Also confirmed on the way: `--resume` picked up a render stopped at frame 1800
+and finished the remaining 499 with no gap and no seam.
+
 ## 2026-08-20 — the render pool never read the config
 
 `tune()` writes seventeen module globals, and whether a worker sees them depends
