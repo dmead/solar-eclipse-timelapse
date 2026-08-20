@@ -1,5 +1,7 @@
 # solar-eclipse-timelapse
 
+![Totality, 2024-04-08, with the prominence panels the pipeline placed](docs/media/totality.jpg)
+
 Turns a total solar eclipse shoot — SER video from a planetary camera, or a
 folder of stills from a DSLR — into a tracked, annotated timelapse. It finds the
 exposure changes you made by hand, holds the Sun still while the mount drifts,
@@ -15,6 +17,12 @@ python -m ecl.run "D:\eclipse\data"
 
 Everything else is surveyed from the data and the machine on startup, written to
 an editable config, and reused from then on.
+
+**The finished video is on the
+[v0.1.0 release](https://github.com/dmead/solar-eclipse-timelapse/releases/tag/v0.1.0)**
+— 2228 frames, 74 s at 30 fps, all 22 captures, in full resolution (108 MB), a
+1080-wide cut and a 2 MB preview. That frame above is one of its frames; nothing
+in it was placed by hand.
 
 Written for one shoot — the 2024-04-08 totality from Cleveland, an ASI585MC on a
 70 mm refractor — and then generalised. Every geometric constant is a fraction
