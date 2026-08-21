@@ -47,9 +47,19 @@ caption inherited from another shoot would be a lie printed on the face of the
 picture. A comma was added to the 5x7 font, which is safe in a way that changing
 a glyph would not be - no existing label contains one.
 
-**One honest asymmetry.** Beads are captioned at second contact and not at
-third, because `beadwindow` measured only the one window. The classifier reports
-what was measured rather than assuming symmetry.
+**Beads are captioned at second contact and not at third, and no code change
+can fix that: THIRD CONTACT WAS NEVER RECORDED.** `14_16_14` ends at t=1974.8
+and `14_17_51` begins at t=2011.8, a 37.1 s gap, and C3 falls at t=1991.5 in
+the middle of it. The last totality frame is t=1974.4; the next frame in the
+video is t=2017.0 and is already partial.
+
+So the asymmetry is in the data, not the classifier - which treats both contacts
+identically, and would caption third-contact beads on a run that contains them.
+`beadwindow` does carry two real limits worth knowing about if this ever comes
+up on other data: it keeps ONE window per capture, and it only scans captures
+containing a filter change, so a third contact recorded inside an entirely
+unfiltered clip would be missed. Neither could be tested here, so neither was
+changed - there is nothing in this run to check a fix against.
 
 ## 2026-08-21 (later still) — the beads bloomed and took the chromosphere with them
 

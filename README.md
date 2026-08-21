@@ -27,7 +27,7 @@ were all chosen by the pipeline from the data.
 
 The full-resolution cut of that same run is on the
 [v0.1.0 release](https://github.com/dmead/solar-eclipse-timelapse/releases/tag/v0.1.0)
-— 2360x1760 at CRF 17 (90 MB), plus a 1080-wide cut sized to survive Instagram
+— 2360x1760 at CRF 17 (93 MB), plus a 1080-wide cut sized to survive Instagram
 without a re-encode, a 2 MB preview, and the animated preview above.
 
 `timelapse.gif` below is a pipeline output too, not a clip chosen by hand: nine
