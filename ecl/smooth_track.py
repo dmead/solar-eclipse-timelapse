@@ -898,7 +898,8 @@ def main():
                       % (fn, n, dev[n // 2], dev[int(0.9 * n)]))
 
         for j, c in enumerate(gs):
-            if j in corr:
+            placed_from_corona = j in corr
+            if placed_from_corona:
                 mx, my = corr[j]
                 bd = None
             else:
@@ -913,11 +914,24 @@ def main():
                 # Moon's offset from the Sun at this instant frames the Sun,
                 # which is what the corona is attached to and what the partial
                 # phases either side are already framed on.
-                if sun_track is not None:
+                if sun_track is not None and not placed_from_corona:
+                    """
+                    Only frames riding the DETECTION LINE need converting.
+
+                    The line is fitted to the ring search, which measures the
+                    Moon, so it needs the offset taken out to frame the Sun. A
+                    corona-placed frame does not: `tl_track` correlates a frame
+                    carrying the prominences and the inner corona, both attached
+                    to the SUN, so that placement already lands close to the Sun's
+                    frame. Measured on this data it holds the Sun 3.4 px from
+                    centre on its own, and subtracting the offset from it as well
+                    took that to 10.7 px - correcting twice for something already
+                    corrected once.
+                    """
                     ox, oy = moon_offset(sun_track["track"], c["utc"])
                     mx -= ox
                     my -= oy
-                elif dxr or dyr:
+                elif (dxr or dyr) and not placed_from_corona:
                     # Rate only: anchored on the centres coinciding at greatest
                     # eclipse, which removes the drift but not the offset.
                     dt = c["utc"] - t_mid
