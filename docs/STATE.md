@@ -4,6 +4,54 @@
 are kept as written; where one names a file that has since moved, the rebuild
 commands at the end of this document are the current truth.*
 
+## 2026-08-21 (later still) — the beads bloomed and took the chromosphere with them
+
+Reported as two faults - the beads brightening through second contact where they
+should be dimming, and red prominences dropping out of the video - and they are
+one fault. `select` gives a stable segment ONE gain, on the reasoning that the
+camera did not change so any brightness change inside it is the eclipse. True of
+the camera, false of the scene: for about two seconds after second contact the
+frame still carries residual photosphere, and a gain chosen to expose the corona
+drives it to white. 6% of the limb annulus burned to colourless white against a
+0.6% baseline later in totality, and the prominences' red contrast dipped to 41
+against a 48 baseline. The colour that identifies a prominence was the thing
+being destroyed.
+
+**The fix is the bound the transition path already had.** `STABLE_CEILING`
+applies `cap = ceiling * TARGET[state] / p99` to stable frames too. It binds only
+while the frame is still bright and relaxes to the segment gain on its own as the
+beads go - 0.50x on the worst frame, parity 65 frames later, the rest of totality
+untouched. Third contact was never affected: the operator ramps back up there,
+which is a TRANSITION, and transitions already had the cap.
+
+| | worst frame | mean over the window |
+|---|---|---|
+| before | 8.85% burned | 2.11% |
+| after | 1.48% burned | 1.22% |
+
+**The prominences were never being dropped by the detector.** Re-running the
+pipeline's own Halpha search at a much lower threshold and matching every peak
+against the panels actually placed: deep in totality, zero uncovered peaks above
+snr 8. The one uncovered peak near second contact is not a prominence either -
+cropped, it is glare at redness 32, against 57 for a real one beside it. Nothing
+needed fixing in `gen_insets`.
+
+**Three of my own measurements were wrong before one was right**, and all three
+failed the same way - they responded to exposure rather than to the thing being
+asked about. A count of pixels over an absolute redness threshold falls when a
+frame is darkened, so it scored the fix as no improvement; the same metric
+scored a frame as MORE burned after its gain was cut. Red CONTRAST - the
+percentile minus the local median, inside the panel boxes - is invariant to that
+and shows what actually happened: contrast is 1.01x on average, because the fix
+does not make prominences better than they ever were. It removes the dip.
+
+**The media had been built from the wrong run.** `D:/eclipse-work/out-tail` was
+created for the tail-stacking experiment and is not what `python -m ecl.run`
+produces - it landed on 1200x900 with 2298 frames where the clean run gives
+1180x880 and 2299. The README says every image comes from one unmodified run, so
+that claim was false for a day. Rebuilt from `out-v2`, a clean run, and the
+figures went back to what they had been before.
+
 ## 2026-08-21 (later) — the totality placement was already right
 
 **Correcting the entry below.** It claimed totality was held on the Moon and

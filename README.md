@@ -20,14 +20,14 @@ an editable config, and reused from then on.
 
 Everything on this page — the frame above, the preview below, and the alignment
 comparison further down — comes from **one unmodified run of the command at the
-top of this README**, on the 2024-04-08 data: 2298 frames, 76.6 s at 30 fps, all
+top of this README**, on the 2024-04-08 data: 2299 frames, 76.6 s at 30 fps, all
 22 captures. No flags, no hand-tuning, nothing placed by hand. The window,
 the panel size, the segments in the preview and the features every panel follows
 were all chosen by the pipeline from the data.
 
 The full-resolution cut of that same run is on the
 [v0.1.0 release](https://github.com/dmead/solar-eclipse-timelapse/releases/tag/v0.1.0)
-— 2400x1800 at CRF 17 (108 MB), plus a 1080-wide cut sized to survive Instagram
+— 2360x1760 at CRF 17 (99 MB), plus a 1080-wide cut sized to survive Instagram
 without a re-encode, a 2 MB preview, and the animated preview above.
 
 `timelapse.gif` below is a pipeline output too, not a clip chosen by hand: nine
@@ -47,11 +47,11 @@ sequence numbers is the same exposure at the same stack depth.
 
 ![No tracking versus the disc track, the same frames side by side](docs/media/alignment.gif)
 
-Over the 45 minutes the Sun travels **496 × 277 px in a 1200 × 900 window** —
-41% of the frame width, 1.7 solar radii — and at the extremes the disc runs past
+Over the 45 minutes the Sun travels **523 × 277 px in an 1180 × 880 window** —
+44% of the frame width, 1.8 solar radii — and at the extremes the disc runs past
 the edge. Almost none of that is the mount losing the Sun: within any
-one capture the drift is 13–49 px. It is the boundaries, where the mount was
-nudged by hand between captures, and three of those move the Sun 533, 387 and
+one capture the drift is 20–54 px. It is the boundaries, where the mount was
+nudged by hand between captures, and three of those move the Sun 544, 387 and
 262 px in a single frame.
 
 This is also why the tracking is a fitted disc track rather than frame-to-frame
