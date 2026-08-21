@@ -32,6 +32,7 @@ import json
 import math
 import os
 from . import paths
+from .tl_drift import moon_offset
 
 # Quality gate for a circle fit. Arc coverage is the informative one: a fit can
 # have plenty of inliers and still be badly constrained if they all lie on a
@@ -499,19 +500,52 @@ def main():
     except Exception:
         print("no corona_track.json - totality will ride the modelled line")
 
-    # During totality the detector measures the Moon, which also moves relative
-    # to the Sun at the rate corona-drift.js measured.
-    dxr = dyr = 0.0
+    """
+    During totality the detector measures the MOON. The corona - the thing being
+    watched - is attached to the Sun. Converting between the two needs the
+    Moon's offset from the Sun at each moment, and where that comes from decides
+    how good the conversion is.
+
+    `ecl.tl_drift` measures it from the partial phases, where the Sun is
+    directly tracked and the baseline is the whole eclipse, and reports a
+    POSITION: offset(t), intercept included. That fixes the step at the phase
+    boundary as well as the drift across totality.
+
+    The legacy path is the corona pipeline's `final/drift.json`, which carries a
+    RATE only and is anchored on the assumption that the two centres coincide at
+    greatest eclipse. It is kept so an old output directory still works.
+
+    Neither being present is not fatal - totality then rides the Moon, which is
+    what happened on every run before `tl_drift` existed - but it is said out
+    loud. This block used to end in a bare `except: pass`, so the correction
+    silently evaluated to zero and nobody knew the video was stepping sideways
+    at each boundary.
+    """
+    sun_track, dxr, dyr = None, 0.0, 0.0
     try:
-        with open(os.path.join(args.out, "final", "drift.json")) as fh:
-            d = json.load(fh)
-        fps = det.get("fps") or 23.3
-        dxr = d["driftPxPerSec"]["x"] / 2.0 / fps
-        dyr = d["driftPxPerSec"]["y"] / 2.0 / fps
-        print("lunar drift %+0.5f, %+0.5f px/frame; mid-totality anchor t=%.1f s"
-              % (dxr, dyr, t_mid))
+        with open(os.path.join(args.out, "diag", "drift.json")) as fh:
+            sun_track = json.load(fh)
+        chk = sun_track.get("check") or {}
+        print("sun track: %.5f plane px/s, residual %.2f px, from %d frames"
+              % (sun_track["ratePlanePxPerSec"], sun_track["residualPx"],
+                 sun_track["samples"]))
+        if chk:
+            print("  extrapolates to %.0f s of totality against %.0f s observed"
+                  % (chk["predictedTotalitySeconds"],
+                     chk["observedTotalitySeconds"]))
     except Exception:
-        pass
+        try:
+            with open(os.path.join(args.out, "final", "drift.json")) as fh:
+                d = json.load(fh)
+            fps = det.get("fps") or 23.3
+            dxr = d["driftPxPerSec"]["x"] / 2.0 / fps
+            dyr = d["driftPxPerSec"]["y"] / 2.0 / fps
+            print("lunar drift %+0.5f, %+0.5f px/frame from the corona "
+                  "pipeline; mid-totality anchor t=%.1f s" % (dxr, dyr, t_mid))
+        except Exception:
+            print("NO SUN TRACK: totality will be placed in the MOON's frame, "
+                  "so the corona drifts across it and the video steps sideways "
+                  "at each phase boundary. Run `python -m ecl.tl_drift`.")
 
     def robust_intercept(vals):
         s = sorted(vals)
@@ -875,16 +909,20 @@ def main():
                 mx += bd[0]
                 my += bd[1]
             if key[1] == "unfiltered":
-                # Convert the Moon track into a Sun track. The detector has no
-                # photosphere to fit during totality and measures the Moon, but
-                # the corona - the thing being watched - is attached to the Sun.
-                # The two centres coincide at greatest eclipse and separate to at
-                # most (Rmoon - Rsun) at each contact, about 9 px here, moving
-                # very nearly linearly in between at the measured differential
-                # rate. Subtracting that offset frames the Sun instead.
-                dt = c["utc"] - t_mid
-                mx -= dxr * dt * (det.get("fps") or 23.3)
-                my -= dyr * dt * (det.get("fps") or 23.3)
+                # Convert the Moon track into a Sun track. Subtracting the
+                # Moon's offset from the Sun at this instant frames the Sun,
+                # which is what the corona is attached to and what the partial
+                # phases either side are already framed on.
+                if sun_track is not None:
+                    ox, oy = moon_offset(sun_track["track"], c["utc"])
+                    mx -= ox
+                    my -= oy
+                elif dxr or dyr:
+                    # Rate only: anchored on the centres coinciding at greatest
+                    # eclipse, which removes the drift but not the offset.
+                    dt = c["utc"] - t_mid
+                    mx -= dxr * dt * (det.get("fps") or 23.3)
+                    my -= dyr * dt * (det.get("fps") or 23.3)
             smoothed[c["i"]] = (mx, my)
             # The trust check asks whether the frame's own DETECTION agrees with
             # where the model put it. A correlation-placed frame does not depend on

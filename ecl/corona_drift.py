@@ -48,7 +48,8 @@ DECIM = 8
 SEARCH_FINE = 6
 MIN_OVERLAP = 500
 
-__all__ = ["measure_drift", "flatten_annulus", "pick_drift_pair"]
+__all__ = ["measure_drift", "measure_drift_arrays", "flatten_annulus",
+           "pick_drift_pair", "drift_ceiling"]
 
 
 def flatten_annulus(g, cx, cy, r_in, r_out):
@@ -165,14 +166,35 @@ def _plane(path):
     return img[:, :, 1] if img.ndim == 3 else img
 
 
+def drift_ceiling(r_moon_px):
+    """Fastest differential the Moon can physically manage, in px/s.
+
+    Converting the synodic rate through the MEASURED Moon radius gives pixels
+    per second without needing the focal length, which is why this holds for any
+    camera the pipeline meets.
+    """
+    return DRIFT_SAFETY * SYNODIC_ARCSEC_PER_S * r_moon_px / MOON_RADIUS_ARCSEC
+
+
 def measure_drift(a, b, log=print):
     """`a` and `b` are dicts of {path, cx, cy, r, t} plus optional {dx, dy}."""
+    A, B = _plane(a["path"]), _plane(b["path"])
+    return measure_drift_arrays(A, B, a, b, log=log)
+
+
+def measure_drift_arrays(A, B, a, b, log=print):
+    """The same measurement on arrays already in memory.
+
+    Split out from `measure_drift` so the timelapse can measure the same
+    quantity from raw frames it has stacked itself, without going through XISF
+    on disk. Everything below this line was already array work; only the loading
+    was ever specific to the corona pipeline's stacks.
+    """
     t0 = time.time()
     dt = b["t"] - a["t"]
     if not abs(dt) > 1:
         raise ValueError(f"need a meaningful time baseline, got dt={dt}s")
 
-    A, B = _plane(a["path"]), _plane(b["path"])
     if A.shape != B.shape:
         raise ValueError("geometry mismatch between the two stacks")
 
@@ -210,7 +232,7 @@ def measure_drift(a, b, log=print):
     # Physics gate. A rate above the synodic ceiling means the correlation found
     # something that is not corona; hand back zero so the caller falls back to
     # rigid registration rather than shifting every level by a fabricated amount.
-    ceiling = DRIFT_SAFETY * SYNODIC_ARCSEC_PER_S * a["r"] / MOON_RADIUS_ARCSEC
+    ceiling = drift_ceiling(a["r"])
     accepted = speed <= ceiling
     log(f"  ceiling {ceiling:.4f} px/s (moon r={a['r']:.1f} px) -> "
         f"{'accepted' if accepted else 'REJECTED'}")

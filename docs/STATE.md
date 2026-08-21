@@ -4,6 +4,66 @@
 are kept as written; where one names a file that has since moved, the rebuild
 commands at the end of this document are the current truth.*
 
+## 2026-08-21 — the video stepped sideways at the phase boundaries
+
+Reported as a jump where the partial phases meet totality, and it is real.
+
+**Cause.** The two phases are tracked on DIFFERENT OBJECTS. `tl_centres` fits
+the Sun's limb while filtered and ring-searches the Moon during totality,
+because there is no photosphere to fit; `tl_track` then correlates a frame whose
+dominant feature is that same lunar limb. The corona is attached to the Sun, so
+totality was being held still on the wrong body.
+
+`smooth_track` has always had the correction and has never been able to apply
+it. It read the rate from `final/drift.json`, written by the CORONA pipeline,
+which the timelapse path does not run. The file was never there, the read sat in
+a bare `except: pass`, and the term silently evaluated to zero on every run ever
+made. Nothing was logged. This is the same failure mode as the render pool
+never reading the config, one entry below.
+
+**Measured, before any fix.** Detecting the limb in the rendered frames: the Sun
+sits 1-4 px from frame centre through both partial phases (sd 1.4-3.5), while
+the totality section sits 8-9 px away and is twice as noisy. The two partial
+phases agree with each other to 4.7 px, which is the measurement's own floor.
+
+**Where to measure the differential.** Not in totality, which is where the
+corona pipeline does it and where it is hardest: 8 px of signal buried under
+40-66 px of mount drift, needing the Moon registered to a pixel. A full-frame
+phase correlation cannot do that — the brightest structure in a totality frame
+is the inner corona, which is fixed to the SUN, so it locks onto a mixture and
+returned 0.244-0.292 plane px/s against a synodic ceiling of 0.149. Rejected by
+the physics gate, correctly.
+
+The partial phases invert every part of that. The Sun is tracked directly, the
+Moon's centre comes from the terminator it casts, and the baseline is the whole
+eclipse. `ecl.tl_drift` fits `moon - sun` there and gets 0.1147 plane px/s with
+7.05 px residual over 30 frames.
+
+**The fit self-checks.** It never sees totality, so extrapolating into it is a
+prediction: closest approach 1.3 px against the 13.0 px an eclipse needs to go
+total, predicting 225.9 s of totality against 213.2 s observed. A track that
+fails to reproduce the eclipse it was not shown is refused.
+
+**Result.** Through the stacked part of totality the Sun's distance from frame
+centre falls from 13.6 px to 8.8 px, against 2.4 px in the partial phases. The
+step roughly halves, 11.2 to 6.4 px. Not eliminated — and the residual is the
+same size as the scatter on the terminator fits the track is built from, so
+closing it further needs a better Moon measurement, not a better model.
+
+**Two things this surfaced.**
+
+- The last ten video frames of totality render from a SINGLE raw frame: the
+  renderer runs out of frames to group at the end of the capture and `stack`
+  collapses from 20 to 1. The dense prominence run already stops a full group
+  short of its segment end to avoid exactly this; the totality tail does not.
+  Those frames are the worst-placed in the video, and the correction makes them
+  worse rather than better.
+- **Measuring where the MOON sits cannot evaluate this change**, and it misled
+  me for several rounds. Once the crop is centred on the Sun, the Moon is
+  supposed to move off-centre by the offset, so a correct fix looks like a
+  regression. The evaluation has to reconstruct the Sun's position from the
+  Moon's, which is what `tools/measure_sun_hold.py` does.
+
 ## 2026-08-20 — drizzle 1 against drizzle 2, measured on the features
 
 Now that `render.drizzle` reaches the workers it can be varied, so the claim in
