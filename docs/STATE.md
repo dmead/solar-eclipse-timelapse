@@ -4,6 +4,53 @@
 are kept as written; where one names a file that has since moved, the rebuild
 commands at the end of this document are the current truth.*
 
+## 2026-08-21 (last) — every frame now knows which phase it is in
+
+Asked for the phase named across the top of the frame and the site and gear
+along the bottom, with the classifier running on its own rather than on anything
+I worked out by eye. So `ecl.phases` decides it from ONE number: the centre
+separation `d` between Sun and Moon, from the fitted track in `diag/drift.json`,
+against the two radii.
+
+    d >= r_sun + r_moon    no eclipse
+    d  < r_sun + r_moon    partial
+    d <= r_moon - r_sun    totality
+
+No pixel is read. The contacts are bisected on d(t), so they land at their true
+time whether or not a frame was captured near them - C1 at -2959 s and C4 at
++6723 s both fall outside the captured span entirely. Beads are the one
+exception and deliberately so: they are the photosphere through lunar valleys,
+not a geometric state, so their extent comes from `diag/beads.json`.
+
+**Two things had to be got right, and both were wrong first.**
+
+The RADII must come from the drift pass, not the survey. They are different
+measurements - 279.0 px off the terminator against 291.8 px off the filtered
+disc - and since totality is `d < r_moon - r_sun`, the survey pair gives a limit
+of 0.23 px, which no eclipse ever meets. Every totality frame came back
+"partial". The drift pair is the one that pass validated itself against.
+
+The BISECTION must be split at closest approach, not at the midpoint of the
+search window. Separation is a U, so each threshold is crossed twice, and a
+midpoint split brackets them only by luck. Here the midpoint was t=1350 s where
+d = 62.8 px, while closest approach is t=1882 s - so it reported no totality at
+all on data that plainly contains it. Both faults are pinned by tests, the
+second by name.
+
+Totality comes out at 219.1 s, against the 219.05 s `tl_drift` predicts by its
+own arithmetic - an independent check that the bisection agrees with the pass
+whose track it is using.
+
+**The caption is config, not code.** `caption.credit` is empty by default and
+nothing infers it: this tool cannot know where data was shot or on what, and a
+caption inherited from another shoot would be a lie printed on the face of the
+picture. A comma was added to the 5x7 font, which is safe in a way that changing
+a glyph would not be - no existing label contains one.
+
+**One honest asymmetry.** Beads are captioned at second contact and not at
+third, because `beadwindow` measured only the one window. The classifier reports
+what was measured rather than assuming symmetry.
+
 ## 2026-08-21 (later still) — the beads bloomed and took the chromosphere with them
 
 Reported as two faults - the beads brightening through second contact where they

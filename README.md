@@ -27,7 +27,7 @@ were all chosen by the pipeline from the data.
 
 The full-resolution cut of that same run is on the
 [v0.1.0 release](https://github.com/dmead/solar-eclipse-timelapse/releases/tag/v0.1.0)
-— 2360x1760 at CRF 17 (99 MB), plus a 1080-wide cut sized to survive Instagram
+— 2360x1760 at CRF 17 (90 MB), plus a 1080-wide cut sized to survive Instagram
 without a re-encode, a 2 MB preview, and the animated preview above.
 
 `timelapse.gif` below is a pipeline output too, not a clip chosen by hand: nine
@@ -243,6 +243,7 @@ The passes, in the order they run and with what each leaves behind:
 | `drift` | `diag/drift.json` | where the Sun is while the Moon hides it |
 | `smooth` | (the config) | the drift model, and which fits to distrust |
 | `insets` | (the config) | what each zoom panel follows |
+| `phases` | `diag/phases.json` | the four contacts, and a phase per frame |
 | `render` | `frames/*.png` | the frames |
 | `encode` | `final/*.mp4`, `final/timelapse.gif` | three cuts and the preview |
 
@@ -375,6 +376,10 @@ Things worth changing first:
 | `panels.size_frac` | panels too large or too small for the output frame |
 | `panels.max_panels` | you want fewer things labelled at once |
 | `centres.r_search_*_r` | the one global radius acquisition looked in the wrong range |
+| `caption.credit` | **name the site and the gear** - blank by default, drawn along the bottom |
+| `caption.show_phase` | you do not want the phase named across the top |
+| `caption.height_frac` | captions too small or too large for the output size |
+| `phases.bead_window_s` | the beads caption starts or ends at the wrong moment |
 | `gif.seconds`, `gif.width` | the animated preview is too long, too short, or too big a file |
 
 ---
