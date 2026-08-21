@@ -46,10 +46,36 @@ fallback path was dead. Those are all real. What is not real is the claim that
 any of it fixed a visible step, because there was no step of that size to fix.
 
 **So what is at the boundary?** The stack collapse, fixed the same day: the last
-ten frames of totality rendered from one raw frame instead of twenty, at 14x the
-sky noise. A sudden change in graininess at the end of totality is exactly the
-kind of thing that reads as a jump, and unlike the alignment it was measurably
-wrong.
+ten frames of totality rendered from one raw frame instead of twenty. A sudden
+change in graininess at the end of totality is exactly the kind of thing that
+reads as a jump, and unlike the alignment it was measurably wrong.
+
+Measured on the re-render, the corona on those ten frames is **3.6x quieter**.
+An earlier entry here said 14x; that was wrong, and so were three other attempts
+at the same number, each for its own reason:
+
+| attempt | got | what it actually measured |
+|---|---|---|
+| corner standard deviation | 14x | a zoom panel in that corner on one side, empty sky on the other |
+| corner sd, both with panels | 1.0x | the panels, which dominate the corner |
+| high-pass over dark sky | 1.24x | the deep sky, crushed nearly flat by the stretch |
+| MAD over the corona | 0 or infinity | integer data, where a MAD can only return 0 or 1 |
+
+What makes the 3.6x trustworthy is a control the others had no way to pass. The
+final tail frame stacks 9 while its neighbours stack 20, so any metric that
+responds to stack depth must separate them by about sqrt(20/9) = 1.49x. This one
+gives 1.41x. The ceiling for averaging 20 frames is sqrt(20) = 4.47x, and the
+stretch eats some of that, so 3.6x sits where it should.
+
+**The re-render changed less than expected.** Comparing the two runs frame by
+frame on raw index, the cusp and sunspot zoom boxes moved **0.00 px** - the
+terminator work did not move them at all - and the prominence boxes agree to
+0.03 px. An earlier claim that panel placement would be several times more
+precise is not supported: the track behind it did improve, but nothing
+downstream consumed the improvement. Besides the quieter tail, one real change
+survives: a sixth "prominence" panel on 156 totality frames is gone, and the
+crop shows why - it was pointed at bare limb, redness 13.5 against 80 for a
+true prominence next to it. A false positive, correctly dropped.
 
 ## 2026-08-21 — the video stepped sideways at the phase boundaries
 
