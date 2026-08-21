@@ -283,6 +283,59 @@ def flatten_captures(frames, log=print):
     log("  flattened %d capture(s)" % n_fixed)
 
 
+def unstack_near_contacts(frames, beads, bead_frames, log=print):
+    """Leave frames beside a CONTACT unstacked, so the beads survive.
+
+    Everything else here averages twenty raw frames into one, which is the right
+    trade except across a contact: a group spans 0.86 s and the beads change
+    visibly inside that, so stacking averages them into a smooth arc.
+
+    A STATE CHANGE IS NOT ALWAYS A CONTACT, and only a contact has beads. This
+    used to unstack every frame within `bead_frames` of any filtered/unfiltered
+    boundary. That is right at second contact and wrong at the other end of this
+    data: third contact fell in a recording gap, so the boundary there is one
+    capture ending and the next opening already blown, tens of seconds later.
+    The last frames of totality are ordinary corona, and they were being rendered
+    from ONE raw frame instead of twenty - measured, 14x the sky noise on the
+    last ten frames of totality.
+
+    The bead pass already answers this from the pixels: it scans for the clipped
+    arc and reports the window it finds. On this data it finds exactly one, at
+    second contact, and none at the end. So a boundary counts as a contact only
+    where `beadwindow` actually found beads on one side of it.
+
+    With no bead pass run there is nothing to consult and the old behaviour is
+    kept: unstacking a few frames needlessly is a far smaller error than
+    averaging away a diamond ring.
+    """
+    marked, spared = 0, 0
+    for i, f in enumerate(frames):
+        if f.get("dense"):
+            continue
+        near = False
+        for j in range(max(0, i - bead_frames),
+                       min(len(frames), i + bead_frames + 1)):
+            if frames[j]["state"] != f["state"]:
+                # Membership, not truthiness: a window recorded as an empty
+                # dict still means the pass looked and found beads there.
+                near = (not beads
+                        or f["file"] in beads
+                        or frames[j]["file"] in beads)
+                if not near:
+                    spared += 1
+                break
+        if near and f.get("stack", 1) > 1:
+            f["stack"] = 1
+            marked += 1
+    if marked and log:
+        log("  beads: %d frames within %d of a contact left unstacked"
+            % (marked, bead_frames))
+    if spared and log:
+        log("  beads: %d frames next to a boundary with no measured beads "
+            "kept their full stack" % spared)
+    return marked, spared
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=paths.out_dir())
@@ -683,21 +736,7 @@ def main():
     contact fell in a recording gap, but the rule is written for both edges
     because the last capture before that gap still ends on a bead.
     """
-    marked = 0
-    for i, f in enumerate(frames):
-        if f.get("dense"):
-            continue
-        near = False
-        for j in range(max(0, i - BEAD_FRAMES), min(len(frames), i + BEAD_FRAMES + 1)):
-            if frames[j]["state"] != f["state"]:
-                near = True
-                break
-        if near and f["stack"] > 1:
-            f["stack"] = 1
-            marked += 1
-    if marked:
-        print("  beads: %d frames within %d of a contact left unstacked"
-              % (marked, BEAD_FRAMES))
+    unstack_near_contacts(frames, beads, BEAD_FRAMES)
 
     # Drop blown frames.
     #
