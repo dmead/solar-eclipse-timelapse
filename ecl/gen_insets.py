@@ -45,6 +45,7 @@ import numpy as np
 
 from . import paths, serio
 from .source import open_source
+from .tl_centres import fixed_radius_fit
 
 # Panel geometry, in FINE pixels - the drizzled render canvas, DRIZZLE times
 # the plane the geometry is measured on. The source box is the panel divided
@@ -653,14 +654,162 @@ def find_bead_arc(g, mx, my, r_moon, max_value=65535.0):
     return (bx, by, ext, deg, area/max(r_moon*math.radians(deg), 1.0), area)
 
 
+# Terminator refinement: rays cast around the Moon's limb, and how far in and
+# out along each one to look for the edge.
+#
+# THE BAND CANNOT BE A FIXED FRACTION OF THE MOON'S RADIUS. It was +/-10%, which
+# is +/-29 px here, and that is wider than the crescent for most of the eclipse:
+# the lit strip is at most (r_sun + separation - r_moon) across, 17 px on a frame
+# where the centres are 30 px apart. Every ray then leaves the solar disc, every
+# ray is rejected, and the refinement silently returns nothing for exactly the
+# deep partial phases that matter most. It is sized from the crescent instead.
+TERM_RAYS = 720
+TERM_REACH_MAX = 12.0
+TERM_REACH_MIN = 2.5
+TERM_REACH_FRAC = 0.45
+
+# A ray is only used if its profile actually contains a step. The terminator is
+# photosphere against lunar shadow, which is the highest-contrast edge in a
+# filtered frame; anything fainter is a ray that missed the arc.
+TERM_MIN_STEP = 0.08
+
+# What a refined fit has to show before it is believed. The arc bound is the
+# important one: a circle fitted to a short arc is poorly constrained around it
+# whatever its residual looks like.
+TERM_MIN_POINTS = 40
+TERM_MIN_ARC = 25
+TERM_MAX_RMS = 3.0
+
+# The narrowest lit strip the terminator can be found in at all. Close to a
+# contact the crescent thins to nothing - at 14 px of separation it is ONE pixel
+# across - and the terminator and the solar limb are then the same edge. A fit
+# there is not noisy, it is measuring the wrong thing, and it is confident about
+# it: two such frames passed every quality gate and moved the fitted track by
+# 200 px, taking its residual from 7 px to 72.
+TERM_MIN_CRESCENT = 8.0
+
+# How far the bootstrap's separation may disagree with the lit area before it is
+# treated as a failed fit rather than a measurement. The two are not independent:
+# how much of the Sun is showing FIXES how far apart the centres are. A bootstrap
+# that says the centres are 235 px apart on a frame where 6% of the disc is lit
+# is not slightly off, it has locked onto something that is not the terminator -
+# and it did, on two frames, with 8000 points and every quality gate passed.
+LIT_TOLERANCE = 0.35
+
+
+def overlap_area(r1, r2, d):
+    """Area common to two circles of radii r1, r2 whose centres are d apart."""
+    if d >= r1 + r2:
+        return 0.0
+    if d <= abs(r1 - r2):
+        return math.pi * min(r1, r2) ** 2
+    a1 = math.acos(max(-1.0, min(1.0, (d * d + r1 * r1 - r2 * r2) / (2 * d * r1))))
+    a2 = math.acos(max(-1.0, min(1.0, (d * d + r2 * r2 - r1 * r1) / (2 * d * r2))))
+    tri = 0.5 * math.sqrt(max(0.0, (-d + r1 + r2) * (d + r1 - r2)
+                              * (d - r1 + r2) * (d + r1 + r2)))
+    return r1 * r1 * a1 + r2 * r2 * a2 - tri
+
+
+def lit_fraction_at(r_sun, r_moon, sep):
+    """Fraction of the solar disc still lit when the centres are `sep` apart."""
+    return 1.0 - overlap_area(r_sun, r_moon, sep) / (math.pi * r_sun * r_sun)
+
+
+def _sample(g, x, y):
+    """Bilinear sample, so an edge can be located between pixels."""
+    h, w = g.shape
+    x = np.clip(x, 0, w - 1.001)
+    y = np.clip(y, 0, h - 1.001)
+    x0, y0 = x.astype(np.int64), y.astype(np.int64)
+    fx, fy = x - x0, y - y0
+    return ((g[y0, x0] * (1 - fx) + g[y0, x0 + 1] * fx) * (1 - fy)
+            + (g[y0 + 1, x0] * (1 - fx) + g[y0 + 1, x0 + 1] * fx) * fy)
+
+
+def terminator_points(g, mx, my, cx, cy, r_sun, r_moon):
+    """Sub-pixel points on the Moon's limb, from an approximate centre.
+
+    The first version took every DARK pixel that touched a lit one, which is
+    quantised to the pixel grid and biased: those points all sit on the shadow
+    side of the true edge. Marching outward along a ray and interpolating where
+    the brightness crosses the midpoint of its own local step is sub-pixel and
+    has no side to be biased towards.
+
+    The threshold is local to each ray for the same reason it is not a single
+    number over the disc: limb darkening changes the lit level by tens of
+    percent across the face, so one global cut puts the edge at a different
+    height in different places, and that is a position-dependent bias on the
+    thing being measured.
+    """
+    sep = float(np.hypot(mx - cx, my - cy))
+    crescent = r_sun + sep - r_moon        # widest the lit strip ever gets
+    if crescent < TERM_MIN_CRESCENT:
+        return np.empty((0, 2))
+    reach = float(np.clip(TERM_REACH_FRAC * crescent,
+                          TERM_REACH_MIN, TERM_REACH_MAX))
+    th = np.linspace(0, 2 * np.pi, TERM_RAYS, endpoint=False)
+    rad = np.arange(r_moon - reach, r_moon + reach, 0.25)
+    if len(rad) < 12:
+        return np.empty((0, 2))
+    xs = mx + np.cos(th)[:, None] * rad[None, :]
+    ys = my + np.sin(th)[:, None] * rad[None, :]
+
+    prof = _sample(g, xs, ys)
+    # Everything sampled must be well inside the SOLAR disc, or the ray runs off
+    # the photosphere and the step it finds is the Sun's limb, not the Moon's.
+    ok = np.hypot(xs - cx, ys - cy) < 0.97 * r_sun
+    good = ok.all(axis=1)
+    if good.sum() < 24:
+        return np.empty((0, 2))
+
+    prof = prof[good]
+    xs, ys = xs[good], ys[good]
+    k = max(2, len(rad) // 8)
+    lo = prof[:, :k].min(axis=1)          # in shadow
+    hi = prof[:, -k:].max(axis=1)         # on the photosphere
+    span = hi - lo
+    strong = span > TERM_MIN_STEP * max(float(np.nanmax(hi)), 1e-9)
+    if strong.sum() < 12:
+        return np.empty((0, 2))
+
+    prof, xs, ys = prof[strong], xs[strong], ys[strong]
+    half = (lo[strong] + hi[strong]) / 2.0
+
+    # First crossing of the half level, interpolated between the two samples
+    # that straddle it.
+    above = prof >= half[:, None]
+    idx = np.argmax(above, axis=1)
+    valid = above.any(axis=1) & (idx > 0)
+    if valid.sum() < 12:
+        return np.empty((0, 2))
+    rows = np.nonzero(valid)[0]
+    j = idx[rows]
+    a = prof[rows, j - 1]
+    b = prof[rows, j]
+    t = np.clip((half[rows] - a) / np.where(b - a == 0, 1e-9, b - a), 0.0, 1.0)
+    px = xs[rows, j - 1] + t * (xs[rows, j] - xs[rows, j - 1])
+    py = ys[rows, j - 1] + t * (ys[rows, j] - ys[rows, j - 1])
+    return np.column_stack([px, py])
+
+
 def fit_moon(frame, cx, cy, r_sun, r_moon):
     """Moon centre for one partial frame, from the terminator it casts.
 
     The boundary between lit and unlit INSIDE the Sun's disc is the Moon's limb,
     so its centre is recoverable directly from the picture - no ephemeris and no
-    drift model. Points on a circle of known radius satisfy
-    2 P.M - (|M|^2 - R^2) = |P|^2, which is linear in (Mx, My, k), so one
-    least-squares solve gives the centre.
+    drift model.
+
+    Two passes. The first is the algebraic solve this used to be on its own:
+    points on a circle satisfy 2 P.M - (|M|^2 - R^2) = |P|^2, linear in
+    (Mx, My, k), so one least-squares gives a centre good to a few px. That is
+    enough to aim rays with, and not enough to measure with - it leaves the
+    RADIUS free, and radius trades against centre whenever the arc is short,
+    which is exactly the degeneracy `tl_centres.fixed_radius_fit` exists to
+    avoid on the Sun.
+
+    The second pass refines the edge to sub-pixel along rays and then solves for
+    the centre ALONE, at the Moon's known radius. Two unknowns instead of three,
+    from unbiased points instead of pixel-quantised ones.
     """
     with open_source(frame["src"]) as src:
         g = green_plane(src, frame["index"])
@@ -668,9 +817,11 @@ def fit_moon(frame, cx, cy, r_sun, r_moon):
     yy, xx = np.mgrid[0:h, 0:w]
     rr = np.hypot(xx - cx, yy - cy)
     inside = rr < r_sun
+    if not inside.any():
+        return None
     lit = inside & (g > 0.5*np.percentile(g[inside], 99))
 
-    # Terminator: unlit pixels inside the disc with a lit neighbour. Kept well
+    # Bootstrap: unlit pixels inside the disc with a lit neighbour. Kept well
     # clear of the solar limb, or the limb itself joins the fit and drags it.
     core = inside & (rr < 0.97*r_sun)
     dark = core & ~lit
@@ -686,7 +837,35 @@ def fit_moon(frame, cx, cy, r_sun, r_moon):
     sol, *_ = np.linalg.lstsq(A, b, rcond=None)
     mx, my = float(sol[0]), float(sol[1])
     rms = float(np.sqrt(np.mean((np.hypot(xs - mx, ys - my) - r_moon)**2)))
-    return mx, my, rms, len(xs)
+
+    # Does the bootstrap agree with how much Sun is actually showing? The lit
+    # area fixes the separation, so a bootstrap that disagrees with it has found
+    # the wrong edge and must not be used to aim the refinement.
+    measured = float(lit.sum()) / float(max(inside.sum(), 1))
+    expect = lit_fraction_at(r_sun, r_moon, float(np.hypot(mx - cx, my - cy)))
+    if abs(measured - expect) > LIT_TOLERANCE:
+        return None
+
+    pts = terminator_points(g, mx, my, cx, cy, r_sun, r_moon)
+    if len(pts) < TERM_MIN_POINTS:
+        return None
+    fit = fixed_radius_fit(pts, mx, my, r_moon)
+
+    """
+    Accepted on its own quality, and NEVER by falling back to the bootstrap.
+
+    The first version returned the bootstrap whenever the refinement looked
+    worse, which mixed two estimators with different biases into one track: the
+    bootstrap leaves the radius free, and with a short arc the radius trades
+    against the centre and moves it by tens of pixels. Feeding both into one
+    straight line took the fit's residual from 7 px to 68. A frame that cannot
+    be refined is dropped instead - there are hundreds to choose from, and one
+    consistent estimator beats two inconsistent ones.
+    """
+    if (fit["rms"] > TERM_MAX_RMS or fit["n"] < TERM_MIN_POINTS
+            or fit["arc"] < TERM_MIN_ARC):
+        return None
+    return fit["cx"], fit["cy"], fit["rms"], fit["n"]
 
 
 def fit_moon_track(partials, r_sun, r_moon, n_try):
