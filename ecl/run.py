@@ -40,6 +40,7 @@ PASSES = [
     ("drift", "ecl.tl_drift", "diag/drift.json - where the Sun is behind the Moon"),
     ("smooth", "ecl.smooth_track", "cx/cy on every frame; drops untrustworthy ones"),
     ("insets", "ecl.gen_insets", "insets on every frame"),
+    ("phases", "ecl.phases", "diag/phases.json - the contacts, and a phase per frame"),
     ("render", "ecl.tl_render", "frames/*.png"),
     ("encode", "ecl.encode", "final/*.mp4"),
 ]

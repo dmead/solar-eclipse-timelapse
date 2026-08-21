@@ -52,6 +52,8 @@ def build_configs(out_dir, work, frames_root, drizzle):
     for ln in toml.splitlines():
         if ln.strip().startswith("drizzle") and not seen:
             ln, seen = "drizzle = %d" % drizzle, True
+        if ln.strip().startswith("credit"):
+            ln = 'credit = ""'
         lines.append(ln)
     io.open(os.path.join(work, "eclipse.toml"), "w",
             encoding="utf-8").write("\n".join(lines) + "\n")
@@ -76,6 +78,11 @@ def build_configs(out_dir, work, frames_root, drizzle):
         cfg.pop("insetPanel", None)
         for fr in cfg["frames"]:
             fr.pop("insets", None)
+            # Captions come off for the same reason the insets do. They would be
+            # identical on both sides, so they cannot mislead - but the panels of
+            # this GIF are a few hundred px wide and the comparison is about
+            # where the crop sits, not about what the phase is called.
+            fr.pop("phase", None)
             if fixed:
                 fr["cx"], fr["cy"] = cx0, cy0
         cfg["sunFixed"] = not fixed

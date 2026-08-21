@@ -194,6 +194,8 @@ TUNED = (
     "GROUP_LEVEL_TOL", "PANEL_EXPOSE", "PANEL_EXPOSE_STRENGTH",
     "OCCLUDE_LEADERS", "SHOULDER_MAX", "PANEL_EXPOSE_PCT",
     "PANEL_EXPOSE_TARGET", "DEFAULT_ENGINE",
+    "SHOW_PHASE", "CAPTION_CREDIT", "CAPTION_HEIGHT_FRAC",
+    "CAPTION_MARGIN_FRAC",
 )
 
 
@@ -222,6 +224,8 @@ def apply_tuned(state):
 def tune(out_dir, log=None):
     """Resolve the render constants from the config against the survey."""
     global DRIZZLE, MAX_GROUP_SHIFT_PX, GAMMA, SHOULDER_KNEE, SHOULDER_CEIL
+    global SHOW_PHASE, CAPTION_CREDIT, CAPTION_HEIGHT_FRAC
+    global CAPTION_MARGIN_FRAC
     global PEDESTAL_PCT, PEDESTAL_FRAC, GAIN_JUMP, GAP_FRAMES, PANEL_EXPOSE
     global PANEL_EXPOSE_STRENGTH, OCCLUDE_LEADERS, SHOULDER_MAX
     global GROUP_LEVEL_TOL
@@ -248,6 +252,10 @@ def tune(out_dir, log=None):
     PANEL_EXPOSE_PCT = P.get("panels.expose_pct", PANEL_EXPOSE_PCT)
     PANEL_EXPOSE_TARGET = P.get("panels.expose_target", PANEL_EXPOSE_TARGET)
     DEFAULT_ENGINE = P.get("render.engine", DEFAULT_ENGINE)
+    SHOW_PHASE = P.get("caption.show_phase", SHOW_PHASE)
+    CAPTION_CREDIT = P.get("caption.credit", CAPTION_CREDIT)
+    CAPTION_HEIGHT_FRAC = P.get("caption.height_frac", CAPTION_HEIGHT_FRAC)
+    CAPTION_MARGIN_FRAC = P.get("caption.margin_frac", CAPTION_MARGIN_FRAC)
     if log:
         log(f"  tuned to r={P.radius_px:.0f}px: drizzle x{DRIZZLE}, "
             f"group shift <= {MAX_GROUP_SHIFT_PX:.1f} px")
@@ -420,6 +428,16 @@ PANEL_EXPOSE_STRENGTH = 0.55
 # carries detail.
 OCCLUDE_LEADERS = False
 
+# Captions: the phase name at the top, a fixed credit line at the bottom.
+# Both empty by default - this tool cannot know where the data was shot or
+# on what, and a caption inherited from another shoot would be a lie printed
+# on the face of the picture. Sizes are fractions of the frame's SHORT side
+# so a caption keeps its proportion at any output size.
+SHOW_PHASE = True
+CAPTION_CREDIT = ""
+CAPTION_HEIGHT_FRAC = 0.014
+CAPTION_MARGIN_FRAC = 0.014
+
 
 def panel_gain(samples, gain, pedestals=None):
     """Gain for one panel: the frame's, reduced PART of the way to its subject.
@@ -579,6 +597,34 @@ class _Canvas:
         sub = mask[gy0 - y:gy1 - y, gx0 - x:gx1 - x]
         for p in self.planes:
             p[gy0:gy1, gx0:gx1][sub] = self.EDGE
+
+
+def draw_captions(out_planes, phase, credit):
+    """Phase name centred at the top, credit line centred at the bottom.
+
+    Drawn LAST, over the panels. A caption a panel can cover is worse than one
+    that clips a panel's corner, and neither reaches the middle of the frame
+    where the subject is.
+
+    The phase string comes from the frame's own `phase` field, which `ecl.phases`
+    assigns from the Sun-Moon separation. This renderer does not know what an
+    eclipse is and does not decide when one phase becomes another - it draws the
+    string it is handed. The credit is fixed text out of the config.
+    """
+    if not phase and not credit:
+        return
+    cv = _Canvas(out_planes)
+    h, w = cv.h, cv.w
+    short = min(h, w)
+    z = max(1, int(round(CAPTION_HEIGHT_FRAC * short / 7.0)))
+    margin = max(1, int(round(CAPTION_MARGIN_FRAC * short)))
+
+    for text, at_top in ((phase, True), (credit, False)):
+        if not text:
+            continue
+        s = str(text).upper()
+        tw = font5x7.text_width(s, z)
+        cv.text(s, int((w - tw) / 2), margin if at_top else h - margin - 7 * z, z)
 
 
 def draw_insets(out_planes, fine, ox2, oy2, insets, panel, zoom,
@@ -843,6 +889,10 @@ def render_frames(frames, cfg, engine=None, log=print):
                 draw_insets(out_planes, fine, ox2, oy2, fr["insets"], panel,
                             zoom, gain=fr["gain"], pedestals=peds,
                             disc_r=cfg.get("discR"))
+
+            draw_captions(out_planes,
+                          fr.get("phase") if SHOW_PHASE else None,
+                          CAPTION_CREDIT)
 
             rgb = np.stack(out_planes, axis=-1)
             np.clip(rgb, 0.0, 1.0, out=rgb)
