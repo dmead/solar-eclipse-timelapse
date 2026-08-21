@@ -53,6 +53,23 @@ MIN_TRANSITION_SAMPLES = 3
 # Brightest a transition frame may render, relative to the stable target.
 TRANSITION_CEILING = 1.15
 
+# The same bound, applied to STABLE frames.
+#
+# A stable segment gets one gain because the camera did not change, so any
+# brightness change inside it is the eclipse itself. That holds while the scene
+# is steady and fails for the two seconds after second contact, where the frame
+# still carries residual photosphere: a gain chosen to expose the corona drives
+# that residue to white. Measured on the 2024-04-08 run, 6% of the limb annulus
+# burned to colourless white at second contact against 0.6% later in totality,
+# and the prominences' red contrast dipped to 41 against a 48 baseline - the
+# beads bloomed and the chromosphere under them went with them.
+#
+# Bounding each frame on its own p99 fixes it without touching the segment gain.
+# The cap only binds while the frame is still bright and relaxes to the segment
+# gain on its own as the beads go: on that run it cut the worst frame to 0.28x
+# and reached parity 126 frames later, leaving the rest of totality untouched.
+STABLE_CEILING = 1.15
+
 """
 On-screen time given to the shortest-exposure stable level inside totality.
 
@@ -82,7 +99,7 @@ MAX_SATFRAC = {"filtered": 0.01, "unfiltered": 0.02}
 
 def tune(out_dir, log=None):
     """Resolve selection and dwell settings from the config."""
-    global TARGET, MAX_SATFRAC, TRANSITION_CEILING, STACK_MAX
+    global TARGET, MAX_SATFRAC, TRANSITION_CEILING, STABLE_CEILING, STACK_MAX
     global FLATTEN_MIN_AREA, FLATTEN_SAT, FLATTEN_MAX
     global SLOWMO_LEVEL_S, RESOLVE_S, BEADS_S, CORONA_S, BEAD_STACK
     from .params import load
@@ -95,6 +112,7 @@ def tune(out_dir, log=None):
         "unfiltered": P.get("select.max_satfrac_unfiltered",
                             MAX_SATFRAC["unfiltered"])}
     TRANSITION_CEILING = P.get("select.transition_ceiling", TRANSITION_CEILING)
+    STABLE_CEILING = P.get("select.stable_ceiling", STABLE_CEILING)
     STACK_MAX = P.get("select.stack_max", STACK_MAX)
     FLATTEN_MIN_AREA = P.area("select.min_crescent_r2", FLATTEN_MIN_AREA)
     FLATTEN_SAT = P.get("select.crescent_sat", FLATTEN_SAT)
@@ -614,8 +632,16 @@ def main():
             if s["kind"] == "stable":
                 # One gain for the whole segment: the camera did not change, so
                 # whatever brightness change happens here is the eclipse itself.
+                #
+                # Bounded per frame all the same, on the frame's own p99. The
+                # segment gain is right for the scene the segment settles into,
+                # and too high for a frame that still holds the photosphere it
+                # was leaving - see STABLE_CEILING.
                 for p in pts:
-                    frames.append(mkframe(s, p, gk, resolve=k in resolve,
+                    cap = (STABLE_CEILING * TARGET[s["state"]] * FULL_SCALE
+                           / max(p["p99"], 1.0 / 65535.0))
+                    frames.append(mkframe(s, p, min(gk, cap),
+                                          resolve=k in resolve,
                                           hold=hold, dense=dense,
                                           bead=p.get("_bead", False)))
             else:
