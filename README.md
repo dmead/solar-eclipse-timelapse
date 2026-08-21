@@ -449,7 +449,9 @@ and `docs/STATE.md`, which records what went wrong when they did not.
 ```
 ecl/            the pipeline; every pass is `python -m ecl.<something>`
 ecl/vendor/     numerics copied from lunation, unmodified — see its docstring
-tools/          make_synthetic.py, the no-data fixture
+tools/          make_synthetic.py     a fixture, so an install can be checked
+                make_alignment_demo.py rebuilds the comparison above
+                measure_drizzle.py     what drizzle recovers, on the features
 tests/          pytest; `python -m pytest`
 docs/NOTES.md   the 2024-04-08 shoot: the data, and what it turned out to need
 docs/STATE.md   the running engineering log
