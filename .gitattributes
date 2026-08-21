@@ -1,0 +1,35 @@
+# Line endings are declared here rather than left to each machine's
+# core.autocrlf. Without this file the endings in a working copy depend on a
+# setting the repository cannot see, which is how an untouched file turns up as
+# a whole-file diff on someone else's clone.
+#
+# `text=auto` stores LF in the repository and checks out whatever the platform
+# uses, so Windows keeps CRLF locally and Linux keeps LF, and neither sees the
+# other's endings in a diff.
+* text=auto
+
+# Never transformed, never diffed as text.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.mp4  binary
+*.webm binary
+*.tif  binary
+*.tiff binary
+*.xisf binary
+*.ser  binary
+*.fits binary
+*.fit  binary
+
+# These are read by interpreters that care. A shell script with CRLF fails with
+# `bad interpreter`, and PowerShell is happiest with CRLF.
+*.sh  text eol=lf
+*.ps1 text eol=crlf
+
+# Resolved by uv, not written by hand: keep it out of diffs and out of the
+# language statistics.
+uv.lock linguist-generated=true
+
+# Documentation, so the repository is not reported as mostly Markdown.
+docs/*.md linguist-documentation=true
