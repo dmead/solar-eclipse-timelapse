@@ -207,6 +207,12 @@ DEFAULTS = {
         "max_satfrac_filtered": 0.01,
         "max_satfrac_unfiltered": 0.02,
         "transition_ceiling": 1.15,
+        # The same bound on a STABLE frame, whose segment gain is chosen for the
+        # scene the segment settles into. Right after second contact the frame
+        # still holds photosphere, and that gain burns it white along with the
+        # chromosphere under it. Raise this towards infinity to restore the old
+        # behaviour of one unbounded gain per segment.
+        "stable_ceiling": 1.15,
         "stack_max": 20,
         # Raw frames averaged for a bead video frame. The beads change fast, so
         # this is far shorter than stack_max - but not 1, because a single short
