@@ -4,6 +4,53 @@
 are kept as written; where one names a file that has since moved, the rebuild
 commands at the end of this document are the current truth.*
 
+## 2026-08-21 (later) — the totality placement was already right
+
+**Correcting the entry below.** It claimed totality was held on the Moon and
+that converting it to the Sun's frame halved a step. Measured properly, totality
+was ALREADY within 3.4 px of the Sun, and the conversion made it 10.8 px. The
+correction is now gated to the frames that actually need it and the number is
+back to 4.3 px.
+
+**Why the earlier measurements were wrong.** Every one of them located the limb
+with a fit seeded at the frame centre. During totality the Moon is 10-20 px
+away, so the fit locked onto a partial arc and reported the centre back with a
+convincing residual — 199 of 720 rays and 1.1 px rms. Drawing both candidate
+circles on the frame settles it in one look: the ring detection's circle hugs
+the silhouette, the frame-centre circle plainly does not. Seeded from the ring
+detection instead, the fit takes 211 rays at 0.95 px and the answers invert.
+
+A measurement that agrees with itself across four different implementations can
+still be wrong in the same way each time, if they share an assumption. All four
+shared the seed.
+
+**Why the conversion was double-counting.** `smooth_track` places most totality
+frames from `corona_track`, not from the ring-detection line. That correlation
+runs on a frame carrying the prominences and the inner corona, both attached to
+the SUN, so it already lands close to the Sun's frame. Subtracting the Moon-Sun
+offset from it as well corrects twice for something corrected once. Only frames
+riding the detection line — which is fitted to the ring search, and so is in the
+Moon's frame — need it, and that is where it now applies.
+
+| placement | moon off centre | SUN off centre |
+|---|---|---|
+| original | 10.2 px | **3.4 px** |
+| offset subtracted from every totality frame | 4.2 px | 10.8 px |
+| offset gated to line-placed frames | 10.7 px | **4.3 px** |
+
+**What stands from the work below.** `ecl.tl_drift` measures the Moon-Sun offset
+to 1.46 px and self-checks by predicting 217.5 s of totality against 213.2 s
+observed; the terminator fit is sub-pixel and rejects fits that disagree with the
+lit area; and `final/drift.json` really was read by a pass nothing writes, so the
+fallback path was dead. Those are all real. What is not real is the claim that
+any of it fixed a visible step, because there was no step of that size to fix.
+
+**So what is at the boundary?** The stack collapse, fixed the same day: the last
+ten frames of totality rendered from one raw frame instead of twenty, at 14x the
+sky noise. A sudden change in graininess at the end of totality is exactly the
+kind of thing that reads as a jump, and unlike the alignment it was measurably
+wrong.
+
 ## 2026-08-21 — the video stepped sideways at the phase boundaries
 
 Reported as a jump where the partial phases meet totality, and it is real.
