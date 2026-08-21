@@ -229,6 +229,28 @@ DEFAULTS = {
         # the measurement is wrong rather than the gain.
         "flatten_max": 2.0,
     },
+    "phases": {
+        # Seconds either side of second and third contact that read as Baily's
+        # beads when the beads pass found no window of its own. Only a fallback:
+        # a measured window in diag/beads.json always wins.
+        "bead_window_s": 2.0,
+    },
+    "caption": {
+        # Top caption follows the phase the `phases` pass assigned. Bottom
+        # caption is fixed text - where the data was shot and on what. Both are
+        # blank by default, because this tool has no way to know either, and a
+        # caption inherited from somebody else's shoot would be a lie on the
+        # face of the picture.
+        "show_phase": True,
+        # Free text, drawn verbatim at the bottom. Empty means no bottom caption.
+        "credit": "",
+        # Height of the caption text as a fraction of the frame's SHORT side.
+        # The inset labels sit at 7/880 = 0.008; captions are the page furniture
+        # rather than a label on a feature, so they default a little larger.
+        "height_frac": 0.014,
+        # Gap between a caption and the frame edge, same fraction.
+        "margin_frac": 0.014,
+    },
 }
 
 _COMMENTS = {

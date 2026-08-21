@@ -17,6 +17,11 @@ __all__ = ["GLYPHS", "text_width", "text_scale", "glyph_mask"]
 GLYPHS = {
     " ": (0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00),
     "-": (0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00),
+    # Added for the credit caption. A NEW glyph changes no existing metric
+    # and no label in use contains a comma, so the warning above about
+    # moving every label does not apply - that is about altering glyphs
+    # already in use, not about widening the set.
+    ",": (0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C, 0x08),
     ".": (0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C),
     # An unmapped character renders as a blank, so BAILY'S BEADS came out as
     # "BAILY S BEADS" - a missing glyph reads as a typo rather than as a missing
