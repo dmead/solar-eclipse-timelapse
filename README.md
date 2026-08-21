@@ -240,6 +240,7 @@ The passes, in the order they run and with what each leaves behind:
 | `select` | `configs/timelapse.json` | which frames make the video, and their gains |
 | `centres` | `diag/centres.json` | a disc centre on every frame |
 | `track` | `diag/corona_track.json` | pointing through totality |
+| `drift` | `diag/drift.json` | where the Sun is while the Moon hides it |
 | `smooth` | (the config) | the drift model, and which fits to distrust |
 | `insets` | (the config) | what each zoom panel follows |
 | `render` | `frames/*.png` | the frames |
@@ -452,6 +453,7 @@ ecl/vendor/     numerics copied from lunation, unmodified — see its docstring
 tools/          make_synthetic.py     a fixture, so an install can be checked
                 make_alignment_demo.py rebuilds the comparison above
                 measure_drizzle.py     what drizzle recovers, on the features
+                measure_sun_hold.py    how still the render holds the Sun
 tests/          pytest; `python -m pytest`
 docs/NOTES.md   the 2024-04-08 shoot: the data, and what it turned out to need
 docs/STATE.md   the running engineering log

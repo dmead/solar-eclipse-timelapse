@@ -37,6 +37,7 @@ PASSES = [
     ("select", "ecl.gen_timelapse", "configs/timelapse.json - frames, gains, dwells"),
     ("centres", "ecl.tl_centres", "diag/centres.json - a disc centre per frame"),
     ("track", "ecl.tl_track", "diag/corona_track.json - totality pointing"),
+    ("drift", "ecl.tl_drift", "diag/drift.json - where the Sun is behind the Moon"),
     ("smooth", "ecl.smooth_track", "cx/cy on every frame; drops untrustworthy ones"),
     ("insets", "ecl.gen_insets", "insets on every frame"),
     ("render", "ecl.tl_render", "frames/*.png"),
@@ -197,7 +198,7 @@ def main(argv=None):
             continue
         print(f"[{name}] {time.strftime('%H:%M:%S')}")
         a = list(common)
-        if name in ("segment", "beads", "insets"):
+        if name in ("segment", "beads", "drift", "insets"):
             a += ["--data", data]
         elif name in ("centres", "track"):
             a = ["--data-dir", data, "--out",
