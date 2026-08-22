@@ -247,6 +247,40 @@ The passes, in the order they run and with what each leaves behind:
 | `render` | `frames/*.png` | the frames |
 | `encode` | `final/*.mp4`, `final/timelapse.gif` | three cuts and the preview |
 
+### What the annotator can label
+
+Six object types, in the priority order the slot allocator uses when two of them
+want the same corner ([`FEATURE_PRIORITY`](https://github.com/dmead/solar-eclipse-timelapse/blob/main/ecl/gen_insets.py#L337)):
+
+| object | detector | how it is found |
+|---|---|---|
+| baily's beads | [`find_bead_arc`](https://github.com/dmead/solar-eclipse-timelapse/blob/main/ecl/gen_insets.py#L609) | connected components on the clipped photosphere. A diamond ring is ONE blob and beads are several with lunar ridges between, so shape separates them where brightness cannot - the clipped area falls smoothly through both. |
+| sunspot | [`find_sunspot`](https://github.com/dmead/solar-eclipse-timelapse/blob/main/ecl/gen_insets.py#L263), [`best_sunspot`](https://github.com/dmead/solar-eclipse-timelapse/blob/main/ecl/gen_insets.py#L307) | darkest spot on the photosphere, taken from the filtered frame where the Moon covers least of it |
+| prominence | [`find_prominences`](https://github.com/dmead/solar-eclipse-timelapse/blob/main/ecl/gen_insets.py#L410), sized by [`size_to_arc`](https://github.com/dmead/solar-eclipse-timelapse/blob/main/ecl/gen_insets.py#L452) | peaks in the H-alpha plane - R with the white corona scaled off - over an annulus at 0.90-1.25 r_moon. Cut off at SNR 8, because an argmax always has an answer and whether it is a prominence is a separate question. |
+| upper cusp | [`find_cusps`](https://github.com/dmead/solar-eclipse-timelapse/blob/main/ecl/gen_insets.py#L1055) | the ends of the lit arc, walked around the Sun's limb rather than solved from two circles: a nearly-tangent intersection slides a long way along the limb for a small error in either centre or radius |
+| lower cusp | [`find_cusps`](https://github.com/dmead/solar-eclipse-timelapse/blob/main/ecl/gen_insets.py#L1055) | the other end of that same arc |
+| lunar limb | [emitted inline](https://github.com/dmead/solar-eclipse-timelapse/blob/main/ecl/gen_insets.py#L1746) | no detector, because it is geometric: the Moon's limb point nearest the Sun's centre, emitted only while that point is still on the photosphere |
+
+Only **prominence** can appear more than once in a frame, up to
+`panels.max_panels` (six). The rest are singular by nature. Measured on the
+2024-04-08 run:
+
+| object | panels | frames | most in one frame | zoom |
+|---|---|---|---|---|
+| prominence | 3729 | 789 | 6 | 1.50-3.00 |
+| lunar limb | 1240 | 1240 | 1 | 3.00 |
+| upper cusp | 1240 | 1240 | 1 | 2.29-2.64 |
+| lower cusp | 1240 | 1240 | 1 | 2.29-2.64 |
+| sunspot | 291 | 291 | 1 | 3.00 |
+| baily's beads | 205 | 205 | 1 | 1.31 |
+
+They sort themselves by phase, because each needs something only one phase has.
+Both cusps and the lunar limb appear on exactly the 1240 filtered frames - a
+cusp needs a crescent - and the sunspot is filtered-only because it sits on the
+photosphere. Prominences are 86% totality. Zoom varies wherever a panel is sized
+to the arc it has to hold rather than to a fixed magnification, which is why the
+bead panel is the widest view of the six.
+
 Outputs go to `D:\eclipse\out` by default — beside the data, not inside it, so a
 read-only or network data folder works. Override with `--out` and `--frames`.
 
