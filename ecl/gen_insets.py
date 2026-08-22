@@ -1142,6 +1142,111 @@ def find_cusps(g, cx, cy, r_sun):
             0.5*(opens_at(a, 1) + opens_at(b, -1)))
 
 
+# Smoothing window search. The window is measured in MEASUREMENTS, not seconds,
+# so it adapts to whatever cadence the capture was taken at. CUSP_SMOOTH_K is how
+# many times the estimated per-frame scatter a window's own residual may reach
+# before the window is judged too wide to follow the motion.
+CUSP_SMOOTH_MIN_WIN = 9
+CUSP_SMOOTH_K = 2.5
+
+
+def _robust_poly(ts, vs, idx, deg):
+    """Polynomial through the points in `idx`, re-fitted without its outliers."""
+    keep = list(idx)
+    c = None
+    for _ in range(4):
+        if len(keep) < deg + 2:
+            break
+        c = np.polyfit([ts[i] for i in keep], [vs[i] for i in keep], deg)
+        res = {i: abs(vs[i] - np.polyval(c, ts[i])) for i in keep}
+        s = sorted(res.values())
+        cut = max(2.5*s[len(s)//2], 1e-4)
+        nk = [i for i in keep if res[i] <= cut]
+        if len(nk) < max(deg + 2, 0.4*len(keep)):
+            break
+        keep = nk
+    return c
+
+
+def _cusp_noise(vs):
+    """Per-measurement scatter, separated from the motion by second differences.
+
+    The cusp angle's own motion is smooth, so a second difference cancels it and
+    leaves noise. That is what makes this an estimate of the MEASUREMENT error
+    rather than of how far the series travels, which is the number the window
+    search has to be judged against.
+    """
+    if len(vs) < 3:
+        return 0.0
+    d2 = sorted(abs(vs[i-1] - 2*vs[i] + vs[i+1]) for i in range(1, len(vs) - 1))
+    # MAD -> sigma is /0.6745, and a second difference of white noise has
+    # variance 6 sigma^2.
+    return d2[len(d2)//2]/0.6745/math.sqrt(6.0)
+
+
+def _smooth_series(ts, vs, deg):
+    """Local polynomial through `vs`, over the widest window the noise allows.
+
+    WHY NOT ONE POLYNOMIAL OVER THE WHOLE CAPTURE, which is what this did. A
+    capture used to be a 30-60 s clip, over which a cusp swings a few degrees and
+    a parabola is an excellent model. Run against a single capture covering a
+    whole 78-minute partial eclipse it is not: the cusp angle sweeps ~230 deg and
+    accelerates hard through maximum, and the best parabola through that is 100
+    deg out in the middle - far enough that `keep_on_limb` threw the panels away
+    as being off the limb.
+
+    The window is chosen rather than configured, and it is chosen by asking the
+    measurements how much smoothing they will support: widen until the fit stops
+    reproducing them to within their own scatter. A capture whose motion IS a
+    parabola keeps the whole-capture window and the previous behaviour exactly,
+    because that window passes the test on the first try.
+
+    IT IS CHOSEN PER POINT, and it has to be. One window for the whole capture is
+    picked on the median residual, which the quiet majority of frames decides; on
+    this eclipse that settled at 140 frames and still left 83 deg of error through
+    maximum, where the pair sweeps 100 deg in 80 frames. Widest-window-that-fits,
+    asked separately at each point, smooths hard over the long slow approach and
+    tightens to a few frames right through maximum.
+    """
+    n = len(vs)
+    sigma = _cusp_noise(vs)
+    tol = max(CUSP_SMOOTH_K*sigma, 1e-4)
+    floor = min(n, max(deg + 2, CUSP_SMOOTH_MIN_WIN))
+    cands, W = [], n
+    while W > floor:
+        cands.append(W)
+        W = max(floor, W//2)
+    cands.append(floor)
+
+    # Neighbouring points share a window, and at the widest one every point
+    # asks for the same whole-capture fit, so the fits are cached by span.
+    cache = {}
+
+    fitted, used = [None]*n, []
+    for i in range(n):
+        for W in cands:
+            lo = max(0, min(i - W//2, n - W))
+            hi = min(n, lo + W)
+            if (lo, hi) not in cache:
+                cache[(lo, hi)] = _robust_poly(ts, vs, range(lo, hi), deg)
+            c = cache[(lo, hi)]
+            if c is None:
+                continue
+            # Judged over the middle of the window, which is the part being
+            # evaluated. A wide fit can track the ends of its own span and still
+            # be far out where it is actually read.
+            q = max(1, (hi - lo)//4)
+            m0, m1 = max(lo, i - q), min(hi, i + q + 1)
+            res = sorted(abs(vs[j] - np.polyval(c, ts[j])) for j in range(m0, m1))
+            if res[len(res)//2] <= tol or W == cands[-1]:
+                fitted[i] = float(np.polyval(c, ts[i]))
+                used.append(W)
+                break
+        if fitted[i] is None:
+            return None
+    return (min(used), max(used)), fitted
+
+
 def fit_cusp_track(rows, deg):
     """Fit each cusp's angle across one capture and hand back the smooth version.
 
@@ -1170,7 +1275,7 @@ def fit_cusp_track(rows, deg):
     t0 = sum(ts)/len(ts)
     ts = [t - t0 for t in ts]              # centre, or the fit is ill-conditioned
     out = [None]*len(rows)
-    dev = []
+    dev, wins = [], []
     for which in (1, 2):
         vs = [r[which] for r in rows]
         for i in range(1, len(vs)):        # unwrap
@@ -1178,26 +1283,16 @@ def fit_cusp_track(rows, deg):
                 vs[i] -= 2*math.pi
             while vs[i] - vs[i-1] < -math.pi:
                 vs[i] += 2*math.pi
-        keep = list(range(len(vs)))
-        c = None
-        for _ in range(4):
-            if len(keep) < deg + 2:
-                break
-            c = np.polyfit([ts[i] for i in keep], [vs[i] for i in keep], deg)
-            res = [abs(vs[i] - np.polyval(c, ts[i])) for i in range(len(vs))]
-            s = sorted(res[i] for i in keep)
-            cut = max(2.5*s[len(s)//2], 1e-4)
-            nk = [i for i in keep if res[i] <= cut]
-            if len(nk) < max(deg + 2, 0.4*len(keep)):
-                break
-            keep = nk
-        if c is None:
-            return None, None
+        got = _smooth_series(ts, vs, deg)
+        if got is None:
+            return None, None, (0, 0)
+        win, fitted = got
+        wins.append(win)
         for i in range(len(rows)):
-            th = float(np.polyval(c, ts[i]))
+            th = fitted[i]
             dev.append(abs(math.atan2(math.sin(vs[i] - th), math.cos(vs[i] - th))))
             out[i] = (th,) if out[i] is None else (out[i][0], th)
-    return out, dev
+    return out, dev, (min(w[0] for w in wins), max(w[1] for w in wins))
 
 
 def main():
@@ -1671,7 +1766,7 @@ def main():
         # nears, so a straight line describes worst exactly the captures whose own
         # measurements are weakest.
         deg = 2 if len(rows) >= CUSP_QUAD_MIN else 1
-        fitted, dev = fit_cusp_track(rows, deg)
+        fitted, dev, win = fit_cusp_track(rows, deg)
         if fitted is None:
             continue
         for (i, _1, _2), ths in zip(rows, fitted):
@@ -1683,10 +1778,10 @@ def main():
         half = min(max(CUSP_BOX_K*op[len(op)//2], CUSP_HALF_MIN), CUSP_HALF_MAX)
         cusp_box[fn] = half
         dev = sorted(d*r_sun for d in dev)
-        print("  %-14s %3d frames, deg %d, scatter %.2f px median; horn opens over"
-              " %.0f px -> half-box %.0f px (zoom %.1fx)"
-              % (fn, len(rows), deg, dev[len(dev)//2], op[len(op)//2], half,
-                 panel_scale(args.panel, half)))
+        print("  %-14s %3d frames, deg %d over %d-%d frame windows, scatter %.2f "
+              "px median; horn opens over %.0f px -> half-box %.0f px (zoom %.1fx)"
+              % (fn, len(rows), deg, win[0], win[1], dev[len(dev)//2],
+                 op[len(op)//2], half, panel_scale(args.panel, half)))
 
     box = args.panel / args.zoom / 2.0   # half-width of the source box, FINE px
     halfsp = box / DRIZZLE               # ... in plane units
