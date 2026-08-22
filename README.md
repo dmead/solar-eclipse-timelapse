@@ -1,5 +1,7 @@
 # solar-eclipse-timelapse
 
+[![tests](https://github.com/dmead/solar-eclipse-timelapse/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/dmead/solar-eclipse-timelapse/actions/workflows/tests.yml)
+
 ![Second contact, 2024-04-08 - the last Baily's beads on the limb, with the panels the pipeline placed](docs/media/totality.jpg)
 
 Turns a total solar eclipse shoot — SER video from a planetary camera, or a
