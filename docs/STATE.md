@@ -4,6 +4,52 @@
 are kept as written; where one names a file that has since moved, the rebuild
 commands at the end of this document are the current truth.*
 
+## 2026-08-22 — the cusp panel drifts in the first capture, and I do not know why
+
+OPEN. Reported as the upper-cusp window sliding during the first few seconds,
+and it is real: the box moves **4.36 degrees** along the limb over that
+capture's 30 s. Geometry says it should move **0.37**.
+
+The cusps are where the limbs cross, so for centres d apart
+
+    cos(alpha) = (d^2 + r_sun^2 - r_moon^2) / (2 d r_sun)
+
+and over that capture d goes 222.0 -> 218.5 px, which moves alpha by a third of
+a degree. The panel moves twelve times that, in the OPPOSITE direction. At the
+limb it is 22 plane px, and at the cusp panel's 2.64x zoom that is 117 fine px
+inside a 440 px panel - 27% of its width, which is what makes it visible.
+
+**Not the fit.** The per-capture quadratic in `fit_cusp_track` was the obvious
+suspect and it is innocent: re-running the measurement shows `find_cusps`
+itself returning 99.94 -> 96.16 deg, with 1.49 deg of scatter (7.6 px at the
+limb). The fit is faithfully tracking its input. The input is wrong.
+
+**Correlated with exposure, and partly explained by it.** Across that capture
+the raw frames dim 23% (p99 0.883 -> 0.677) and the FIRST FRAMES ARE CLIPPED -
+satfrac 0.0027, max at full scale - as the operator rides the exposure down out
+of saturation. `find_cusps` thresholds at `CUSP_EDGE_FRAC * percentile(v, 95)`,
+which is relative, so a uniform dimming ought to cancel. What does not cancel is
+the profile changing SHAPE: the sky pedestal holds at 0.0073 while the disc
+dims, and the highlights clip. On a tapering horn, a fractional threshold that
+lands slightly differently slides a long way along the taper.
+
+Tested by intervention - re-measuring with the pedestal subtracted first:
+
+| | span | scatter | trend |
+|---|---|---|---|
+| as shipped | 5.90 deg | 1.49 deg | -4.54 deg |
+| pedestal subtracted | 4.55 deg | 1.05 deg | -3.01 deg |
+
+So the pedestal is about a third of it. **Two thirds is unexplained**, and the
+clipping is the next suspect but has not been isolated. Nothing was changed:
+a fix for a cause that is one-third understood is a guess, and this file already
+records what happens when a plausible number gets committed before it is
+checked.
+
+Why only this capture: it is the one transitioning out of saturation. Later
+captures are unclipped and steady, and their cusp boxes move 0.2-0.6 px per
+step against this one's 4.0.
+
 ## 2026-08-21 (last) — every frame now knows which phase it is in
 
 Asked for the phase named across the top of the frame and the site and gear
