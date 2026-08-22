@@ -774,7 +774,7 @@ wheels = [
 ]
 
 [[package]]
-name = "solar-eclipse-pipeline"
+name = "solar-eclipse-timelapse"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
